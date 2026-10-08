@@ -45,7 +45,7 @@ import { UserMessageComponent } from "./node_modules/@earendil-works/pi-coding-a
 import { getEditorTheme, getMarkdownTheme, initTheme, theme } from "./node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { InteractiveThemeController } from "./node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme-controller.js";
 import { agentOf, type DurableController, type DurableView, type DurableViewSource } from "./runtime.ts";
-import { buildSlashCommands, listMcpServers, listSkills } from "./skin.ts";
+import { buildSlashCommands, listSkills } from "./skin.ts";
 import { listSessions, sessionName, setSessionName } from "./sessions.ts";
 import { homedir } from "node:os";
 import { copyToClipboard } from "./node_modules/@earendil-works/pi-coding-agent/dist/utils/clipboard.js";
@@ -738,13 +738,11 @@ export async function runDurableTui(
 			if (trimmed === "/reload") return void controller.reload();
 			if (trimmed === "/quit") return exit();
 			if (trimmed === "/mcp") {
-				const selector = new ListSelector(
-					"MCP servers (connect on first use):",
-					listMcpServers(source.current().session.cwd).map((name) => ({ value: name, label: name })),
-					() => view.restoreEditor(),
-					() => view.restoreEditor(),
-				);
-				view.mount(selector);
+				view.ui.flash("Go run pi to configure MCP servers.");
+				return;
+			}
+			if (trimmed === "/settings") {
+				view.ui.flash("Go to pi and run /settings.");
 				return;
 			}
 			void controller.submit(trimmed, "steer");

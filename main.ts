@@ -7,6 +7,7 @@ import { openDurable } from "./runtime.ts";
 import { runDurableTui } from "./tui.ts";
 import { listMcpServers } from "./skin.ts";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import { initTheme, theme } from "./node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
 function parseArgs(argv: readonly string[]): { continueSession: boolean; check: boolean; sessionId?: string } {
 	let continueSession = false;
@@ -74,7 +75,14 @@ while (true) {
 			throw new Error("Interactive chat needs a terminal. Use --check for offline startup checks.");
 		}
 		const next = await runDurableTui(durable.view, durable.controller, durable.settings);
-		if (next === undefined) break;
+		if (next === undefined) {
+			if (process.stdout.isTTY) {
+				initTheme();
+				const id = durable.view.current().session.id;
+				process.stdout.write(`${theme.fg("dim", "To resume this session:")} pss --session ${id}\n`);
+			}
+			break;
+		}
 		selected = next;
 		resume = false;
 	} finally {

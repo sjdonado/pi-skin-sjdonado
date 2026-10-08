@@ -46,7 +46,7 @@ pi                        # upstream CLI directly
 
 ## Chat commands
 
-`/model`, `/tasks`, `/agents`, `/compact` come from the sample; `/copy`, `/name`, `/session`, `/resume`, `/reload`, `/quit` and `/mcp` are skin additions. Exit with Ctrl+D or Ctrl+C. Typing `/` completes slash commands and discovered skills with live model names, like pi's message bar. Ask in prose for side questions and background work ("answer this from our history without touching the main thread", "research this in the background") and the model calls the `btw` and `background` tools itself; a background report arrives as a `[background report]` message.
+`/model`, `/tasks`, `/agents`, `/compact` come from the sample; `/copy`, `/name`, `/session`, `/resume`, `/reload`, `/quit`, `/mcp` and `/settings` are skin additions (`/mcp` and `/settings` redirect to pi). Exit with Ctrl+D or Ctrl+C. Typing `/` completes slash commands and discovered skills with live model names, like pi's message bar. Ask in prose for side questions and background work ("answer this from our history without touching the main thread", "research this in the background") and the model calls the `btw` and `background` tools itself; a background report arrives as a `[background report]` message.
 
 ## Verification
 
