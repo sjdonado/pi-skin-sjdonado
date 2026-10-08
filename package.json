@@ -1,7 +1,7 @@
 {
   "name": "pi-skin-sjdonado",
   "version": "0.1.0",
-  "description": "My scheme for running a harness in Pi. pss opens the scheme.",
+  "description": "My skin for running a harness in Pi. pss opens the skin.",
   "type": "module",
   "bin": {
     "pss": "./bin/pss"
