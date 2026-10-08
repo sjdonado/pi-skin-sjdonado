@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Launches the pi-skin-sjdonado scheme from this repository checkout.
+# Launches the pi-skin-sjdonado skin from this repository checkout.
 # The only dependency is pi itself: installed, configured and logged in.
 set -eu
 SELF="$0"
@@ -9,7 +9,7 @@ while [ -L "$SELF" ]; do
 done
 DIR="$(CDPATH= cd -- "$(dirname -- "$SELF")/.." && pwd)"
 if [ ! -d "$DIR/node_modules" ]; then
-  printf '%s\n' "scheme dependencies are missing. Run: bun install --ignore-scripts --no-save --cwd \"$DIR\"" >&2
+  printf '%s\n' "skin dependencies are missing. Run: bun install --ignore-scripts --no-save --cwd \"$DIR\"" >&2
   exit 1
 fi
 exec bun "$DIR/main.ts" "$@"

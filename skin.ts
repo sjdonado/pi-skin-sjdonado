@@ -107,6 +107,37 @@ export function createSkinPrompt(settings: SettingsManager, fallbackCwd: string)
 	});
 }
 
+// ─── slash completion: pi's message-bar autocomplete ────────────────────────
+// The sample TUI has no completion; this feeds the editor the same slash
+// commands plus the discovered skills, with live model names for /model.
+
+const skillLists = new Map<string, Skill[]>();
+export function listSkills(settings: SettingsManager, cwd: string): Skill[] {
+	let found = skillLists.get(cwd);
+	if (found === undefined) {
+		found = loadSkills({ cwd, agentDir: getAgentDir(), skillPaths: settings.getSkillPaths(), includeDefaults: true }).skills;
+		skillLists.set(cwd, found);
+	}
+	return found;
+}
+
+export function buildSlashCommands(
+	skills: Skill[],
+	getModels: () => readonly { provider: string; modelId: string }[],
+): SlashCommand[] {
+	const choices =
+		(values: readonly string[]) => (prefix: string) =>
+			values.filter((v) => v.startsWith(prefix)).map((v) => ({ value: v, label: v }));
+	return [
+		{ name: "model", description: "Select provider/model", argumentHint: "[provider/model]", getArgumentCompletions: (prefix: string) => choices(getModels().map((m) => `${m.provider}/${m.modelId}`))(prefix) },
+		{ name: "tasks", description: "Show or hide the task panel" },
+		{ name: "agents", description: "Switch conversations" },
+		{ name: "compact", description: "Compact this conversation", argumentHint: "[instructions]" },
+		...skills.map((skill) => ({ name: `skill:${skill.name}`, description: skill.description, argumentHint: "[task]" })),
+	];
+}
+import type { SlashCommand } from "@earendil-works/pi-tui";
+
 // ─── shared answers ─────────────────────────────────────────────────────────
 
 async function answerText(entry: { model?: readonly unknown[] } | undefined): Promise<string> {

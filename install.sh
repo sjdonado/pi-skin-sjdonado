@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Installs pi-skin-sjdonado: my scheme for running a harness in Pi.
+# Installs pi-skin-sjdonado: my skin for running a harness in Pi.
 #
 #   curl -fsSL https://raw.githubusercontent.com/sjdonado/pi-skin-sjdonado/main/install.sh | sh
 #
