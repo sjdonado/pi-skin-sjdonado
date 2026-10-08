@@ -1,6 +1,6 @@
 # Pan-architecture
 
-The panoramic view of this skin: what sits where, what talks to what, and why the pieces are shaped this way. For the project pitch, see `README.md`; for the agent working agreement, see `agents.md`.
+The panoramic view of this skin: what sits where, what talks to what, and why the pieces are shaped this way. For the project pitch, see `README.md`; for the agent working agreement, see `AGENTS.md`.
 
 ## Layers
 
