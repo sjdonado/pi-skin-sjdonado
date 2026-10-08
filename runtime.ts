@@ -31,6 +31,7 @@ const context = BACKGROUND_CONTEXT;
 export interface ModelSummary extends ModelRef {
 	readonly name: string;
 	readonly contextWindow: number;
+	readonly subscription: boolean;
 }
 
 export interface Notice {
@@ -169,6 +170,7 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 				modelId: model.id,
 				name: model.name,
 				contextWindow: model.contextWindow,
+				subscription: modelRuntime.isUsingSubscription(model.provider),
 			}));
 
 		let state: DurableView = {

@@ -46,6 +46,7 @@ import { getEditorTheme, getMarkdownTheme, initTheme, theme } from "./node_modul
 import { InteractiveThemeController } from "./node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme-controller.js";
 import { agentOf, type DurableController, type DurableView, type DurableViewSource } from "./runtime.ts";
 import { buildSlashCommands, listSkills } from "./skin.ts";
+import { homedir } from "node:os";
 import { CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
 
 const SELECT_THEME: SelectListTheme = {
@@ -165,6 +166,7 @@ class DurableTui {
 	readonly #editorContainer = new Container();
 	readonly #editor: CustomEditor;
 	readonly #cwd: string;
+	readonly #settings: SettingsManager;
 	/** The newest card per call ID; provider call IDs may repeat across turns. */
 	readonly #tools = new Map<string, ToolExecutionComponent>();
 	/** Every card shown, also older ones whose call ID a later turn reused. */
@@ -182,8 +184,9 @@ class DurableTui {
 	#rebuilt = false;
 	#transcript: ScrollView;
 
-	constructor(cwd: string, handlers: Handlers) {
+	constructor(cwd: string, handlers: Handlers, settings: SettingsManager) {
 		this.#cwd = cwd;
+		this.#settings = settings;
 		this.#ui = new TuiAltScreen(new ProcessTerminal(), false, getAgentDir());
 		const keybindings = KeybindingsManager.create();
 		setKeybindings(keybindings);
@@ -388,16 +391,23 @@ class DurableTui {
 		if (usage.cacheRead) stats.push(`R${formatTokens(usage.cacheRead)}`);
 		if (usage.cacheWrite) stats.push(`W${formatTokens(usage.cacheWrite)}`);
 		stats.push(`$${usage.cost.total.toFixed(3)}`);
-		const contextWindow =
-			view.models.find((model) => model.provider === agent.model?.provider && model.modelId === agent.model.modelId)
-				?.contextWindow ?? 0;
+		const current = view.models.find(
+			(model) => model.provider === agent.model?.provider && model.modelId === agent.model.modelId,
+		);
+		if (current?.subscription === true) stats.push("(sub)");
+		const contextWindow = current?.contextWindow ?? 0;
 		if (contextWindow > 0) {
 			const tokens = contextTokens(view.conversation.entries);
-			const percent = tokens === undefined ? undefined : (tokens / contextWindow) * 100;
-			const text = `${percent === undefined ? "?" : percent.toFixed(1)}%/${formatTokens(contextWindow)}`;
-			stats.push(percent !== undefined && percent > 90 ? theme.fg("error", text) : text);
+			const percent = tokens === undefined ? 0 : (tokens / contextWindow) * 100;
+			const text = `${percent.toFixed(1)}%/${formatTokens(contextWindow)}${this.#settings.getCompactionEnabled() ? " (auto)" : " (manual)"}`;
+			stats.push(percent > 90 ? theme.fg("error", text) : text);
 		}
-		this.#footerStats.setText(theme.fg("dim", `${stats.join(" ")}  ${view.session.cwd}`));
+		const home = homedir();
+		const cwd =
+			view.session.cwd === home || view.session.cwd.startsWith(home + "/")
+				? `~${view.session.cwd.slice(home.length)}`
+				: view.session.cwd;
+		this.#footerStats.setText(theme.fg("dim", `${stats.join(" ")}  ${cwd}`));
 		const model = agent.model === undefined ? "no model" : `${agent.model.provider}/${agent.model.modelId}`;
 		const shown = view.conversations.find((candidate) => candidate.id === view.conversation.conversation.id);
 		const label = shown?.label ?? `conversation ${view.conversation.conversation.id}`;
@@ -642,7 +652,7 @@ export async function runDurableTui(
 		exit,
 		selectModel,
 		cycleThinking: () => void controller.cycleThinking(),
-	});
+	}, settings);
 
 	// pi's message-bar completion: slash commands plus discovered skills, with live model names.
 	view.setAutocomplete(
