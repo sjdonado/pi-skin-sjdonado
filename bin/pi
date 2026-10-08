@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# Launches the pi-durable harness from this repository checkout.
+set -eu
+DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+if [ ! -d "$DIR/node_modules" ]; then
+  printf '%s\n' "pi-durable dependencies are missing. Run: bun install --ignore-scripts --no-save --cwd \"$DIR\"" >&2
+  exit 1
+fi
+exec bun "$DIR/main.ts" "$@"

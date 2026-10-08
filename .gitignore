@@ -1,0 +1,5 @@
+node_modules/
+bun.lock
+results-*.json
+transcript-*.jsonl
+results-ui-*/
