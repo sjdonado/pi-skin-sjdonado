@@ -1,17 +1,17 @@
 {
-  "name": "pi-durable",
+  "name": "pi-skin-sjdonado",
   "version": "0.1.0",
-  "description": "General-purpose interactive coding harness on Pi Durable. pi opens the harness, pi-agent keeps the upstream Pi CLI.",
+  "description": "My scheme for running a harness in Pi. pss opens the scheme, pi-agent keeps the upstream Pi CLI.",
   "type": "module",
   "bin": {
-    "pi": "./bin/pi",
+    "pss": "./bin/pss",
     "pi-agent": "./bin/pi-agent"
   },
   "files": ["*.ts", "bin/", "README.md"],
   "scripts": {
     "start": "bun main.ts",
     "test": "bun test",
-    "check": "tsc --noEmit"
+    "check": "TMP=$(mktemp .check-out.XXXXXX); trap 'rm -f \"$TMP\"' EXIT; tsc --noEmit --pretty false > \"$TMP\" 2>&1; CODE=$?; awk '/\\([0-9]+,[0-9]+\\): error TS/ { show = ($0 !~ /^node_modules\\//); if (show) print; next } show { print }' \"$TMP\" | tee /dev/stderr | grep -q 'error TS' && exit 1 || { grep -q 'error TS' \"$TMP\" || [ \"$CODE\" -eq 0 ] || exit \"$CODE\"; exit 0; }"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.1.0",

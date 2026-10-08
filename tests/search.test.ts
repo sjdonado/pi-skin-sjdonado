@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { SearchUsage, searchExtension } from "./search.ts";
+import { SearchUsage, searchExtension } from "../main.ts";
 
 for (const provider of ["openai-codex", "opencode-go"]) test(`web search uses ${provider}'s native route with stable session identity`, async () => {
   const apiName = provider === "openai-codex" ? "openai-codex-responses" : "openai-responses";

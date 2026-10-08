@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { connectMcp } from "./mcp.ts";
+import { connectMcp } from "../main.ts";
 
 test("code mode discovers MCP schemas and executes dependent calls in the sandbox", async () => {
   const source = `import {createInterface} from "node:readline";createInterface({input:process.stdin}).on("line",line=>{const r=JSON.parse(line);if(!r.id)return;let result={};if(r.method==="initialize")result={protocolVersion:"2025-11-25",capabilities:{tools:{}},serverInfo:{name:"fake",version:"1"}};if(r.method==="tools/list")result={tools:[{name:"increment",description:"Increment a value",inputSchema:{type:"object",properties:{value:{type:"number"}},required:["value"]}}]};if(r.method==="tools/call")result={content:[{type:"text",text:"ok"}],structuredContent:{value:r.params.arguments.value+1}};console.log(JSON.stringify({jsonrpc:"2.0",id:r.id,result}));});`;
