@@ -404,7 +404,7 @@ class DurableTui {
 		this.#footerHints.setText(
 			`${theme.fg(label === "main" ? "dim" : "accent", label)}${theme.fg(
 				"dim",
-				` · ${model} · thinking:${agent.thinkingLevel ?? "off"} (${keyText("app.thinking.cycle")}) · ${keyText("app.model.select")} or /model · /agents · /compact · /tasks · ${keyText("app.message.followUp")} follow-up · ${keyText("app.clear")} exit`,
+				` · ${model} · thinking:${agent.thinkingLevel ?? "off"} (${keyText("app.thinking.cycle")}) · ${keyText("app.model.select")} or /model · ${keyText("app.message.followUp")} follow-up · ${keyText("app.clear")} exit`,
 			)}`,
 		);
 	}
