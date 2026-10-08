@@ -1,16 +1,14 @@
 {
   "name": "pi-skin-sjdonado",
   "version": "0.1.0",
-  "description": "My scheme for running a harness in Pi. pss opens the scheme, pi-agent keeps the upstream Pi CLI.",
+  "description": "My scheme for running a harness in Pi. pss opens the scheme.",
   "type": "module",
   "bin": {
-    "pss": "./bin/pss",
-    "pi-agent": "./bin/pi-agent"
+    "pss": "./bin/pss"
   },
   "files": ["*.ts", "bin/", "README.md"],
   "scripts": {
     "start": "bun main.ts",
-    "test": "bun test",
     "check": "TMP=$(mktemp .check-out.XXXXXX); trap 'rm -f \"$TMP\"' EXIT; tsc --noEmit --pretty false > \"$TMP\" 2>&1; CODE=$?; awk '/\\([0-9]+,[0-9]+\\): error TS/ { show = ($0 !~ /^node_modules\\//); if (show) print; next } show { print }' \"$TMP\" | tee /dev/stderr | grep -q 'error TS' && exit 1 || { grep -q 'error TS' \"$TMP\" || [ \"$CODE\" -eq 0 ] || exit \"$CODE\"; exit 0; }"
   },
   "dependencies": {
@@ -22,7 +20,8 @@
     "@earendil-works/pi-tui": "1.1.0",
     "@earendil-works/chord": "1.1.0",
     "typebox": "1.3.27",
-    "pi-web-search": "1.7.0"
+    "pi-web-search": "1.7.0",
+    "proper-lockfile": "4.1.2"
   },
   "devDependencies": {
     "@types/bun": "1.3.10",
