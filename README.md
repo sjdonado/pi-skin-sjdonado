@@ -7,7 +7,7 @@
 The host uses pinned Pi 1.1.0 libraries in this directory and Bun. Install local dependencies without lifecycle scripts:
 
 ```sh
-bun install --ignore-scripts --no-save --cwd "$HOME/Development/pi-durable"
+bun install --ignore-scripts --no-save --cwd "$HOME/Developer/pi-durable"
 ```
 
 From any project directory:
