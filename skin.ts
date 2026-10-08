@@ -185,6 +185,8 @@ export function buildSlashCommands(
 		{ name: "session", description: "Show session info" },
 		{ name: "resume", description: "Resume a saved session" },
 		{ name: "reload", description: "Reload skills and prompt resources" },
+		{ name: "quit", description: "Exit the session" },
+		{ name: "mcp", description: "List configured MCP servers" },
 		...skills.map((skill) => ({ name: `skill:${skill.name}`, description: skill.description, argumentHint: "[task]" })),
 	];
 }

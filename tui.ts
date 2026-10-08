@@ -45,7 +45,7 @@ import { UserMessageComponent } from "./node_modules/@earendil-works/pi-coding-a
 import { getEditorTheme, getMarkdownTheme, initTheme, theme } from "./node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { InteractiveThemeController } from "./node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme-controller.js";
 import { agentOf, type DurableController, type DurableView, type DurableViewSource } from "./runtime.ts";
-import { buildSlashCommands, listSkills } from "./skin.ts";
+import { buildSlashCommands, listMcpServers, listSkills } from "./skin.ts";
 import { listSessions, sessionName, setSessionName } from "./sessions.ts";
 import { homedir } from "node:os";
 import { copyToClipboard } from "./node_modules/@earendil-works/pi-coding-agent/dist/utils/clipboard.js";
@@ -416,7 +416,7 @@ class DurableTui {
 		this.#footerHints.setText(
 			`${theme.fg(label === "main" ? "dim" : "accent", label)}${theme.fg(
 				"dim",
-				` · ${model} · thinking:${agent.thinkingLevel ?? "off"} (${keyText("app.thinking.cycle")}) · ${keyText("app.model.select")} or /model · ${keyText("app.message.followUp")} follow-up · ${keyText("app.clear")} exit`,
+				` · ${model} · thinking:${agent.thinkingLevel ?? "off"} (${keyText("app.thinking.cycle")}) · ${keyText("app.message.followUp")} follow-up`,
 			)}`,
 		);
 	}
@@ -736,6 +736,17 @@ export async function runDurableTui(
 			}
 			if (trimmed === "/resume") return selectSession();
 			if (trimmed === "/reload") return void controller.reload();
+			if (trimmed === "/quit") return exit();
+			if (trimmed === "/mcp") {
+				const selector = new ListSelector(
+					"MCP servers (connect on first use):",
+					listMcpServers(source.current().session.cwd).map((name) => ({ value: name, label: name })),
+					() => view.restoreEditor(),
+					() => view.restoreEditor(),
+				);
+				view.mount(selector);
+				return;
+			}
 			void controller.submit(trimmed, "steer");
 		},
 		followUp: (text) => void controller.submit(text, "followUp"),
