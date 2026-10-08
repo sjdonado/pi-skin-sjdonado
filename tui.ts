@@ -45,6 +45,8 @@ import { UserMessageComponent } from "./node_modules/@earendil-works/pi-coding-a
 import { getEditorTheme, getMarkdownTheme, initTheme, theme } from "./node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { InteractiveThemeController } from "./node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme-controller.js";
 import { agentOf, type DurableController, type DurableView, type DurableViewSource } from "./runtime.ts";
+import { buildSlashCommands, listSkills } from "./skin.ts";
+import { CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
 
 const SELECT_THEME: SelectListTheme = {
 	selectedPrefix: (text) => theme.fg("accent", text),
@@ -269,6 +271,10 @@ class DurableTui {
 		this.#editorContainer.addChild(component);
 		this.#ui.setFocus(component);
 		this.#ui.requestRender();
+	}
+
+	setAutocomplete(commands: SlashCommand[]): void {
+		this.#editor.setAutocompleteProvider(new CombinedAutocompleteProvider(commands, this.#cwd));
 	}
 
 	restoreEditor(): void {
@@ -637,6 +643,11 @@ export async function runDurableTui(
 		selectModel,
 		cycleThinking: () => void controller.cycleThinking(),
 	});
+
+	// pi's message-bar completion: slash commands plus discovered skills, with live model names.
+	view.setAutocomplete(
+		buildSlashCommands(listSkills(settings, source.current().session.cwd), () => source.current().models),
+	);
 
 	// pi's theme handling: the theme setting (also light/dark pairs) resolved against the terminal's reported colors.
 	const themes = new InteractiveThemeController(view.ui, {

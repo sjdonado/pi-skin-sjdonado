@@ -1,8 +1,8 @@
 # pi-skin-sjdonado
 
-My skin for running a harness in Pi. `pss` opens it in the current project. The only dependency is `pi` itself: installed, configured and logged in.
+A personal Pi skin. `pss` opens my day-to-day harness in the current project. The only dependency is `pi` itself: installed, configured and logged in.
 
-A skin sits on top of Pi. It does not replace it and it is not an out-of-the-box experience for everyone, a distro, a fork, or something maintained for everyone. It encapsulates the pieces I need from Pi and Pi Durable, plus my dotfiles (skills, `agents.md` and the rest), into the configuration for my day-to-day harness. The hope is to inspire more skins, the way people build their own Neovim configurations.
+A skin sits on top of Pi. It does not replace Pi, and it is not an out-of-the-box experience for everyone, a distro, a fork, or something maintained for everyone. It takes the building blocks I need, from Pi and Pi Durable plus my dotfiles (skills, `agents.md` and the rest), and composes them into the configuration for my harness. The hope is to inspire more skins, the way people build their own Neovim configurations: personal, small, and upstream-faithful.
 
 The backbone is copied from the upstream Durable sample (`durable/` coding agent plus the `vacation/` research pattern in `earendil-works/pi`), file for file:
 
@@ -15,7 +15,7 @@ The backbone is copied from the upstream Durable sample (`durable/` coding agent
 | `tui.ts` | rendering with pi's interactive components |
 | `skin.ts` | the skin: prompt, subagents, search, MCP (was `vacation.ts`) |
 
-Only import paths are retargeted from the monorepo to the installed packages; there is deliberately no other cleverness in the backbone. Everything the harness runs is a task, and subagents are conversations owned by the task that started them. Log in with pi itself; credentials are shared, so there is no login UI here.
+Only import paths are retargeted from the monorepo to the installed packages; there is deliberately no other cleverness in the backbone. Everything the harness runs is a task, and subagents are conversations owned by the task that started them. Log in with pi itself; credentials are shared, so there is no login UI here. See `docs/pan-architecture.md` for the full picture.
 
 ## What the skin adds
 
@@ -46,7 +46,7 @@ pi                        # upstream CLI directly
 
 ## Chat commands
 
-`/model`, `/tasks`, `/agents`, `/compact` come from the sample; exit with Ctrl+D or Ctrl+C. Ask in prose for side questions and background work ("answer this from our history without touching the main thread", "research this in the background") and the model calls the `btw` and `background` tools itself; a background report arrives as a `[background report]` message.
+`/model`, `/tasks`, `/agents`, `/compact` come from the sample; exit with Ctrl+D or Ctrl+C. Typing `/` completes slash commands and discovered skills with live model names, like pi's message bar. Ask in prose for side questions and background work ("answer this from our history without touching the main thread", "research this in the background") and the model calls the `btw` and `background` tools itself; a background report arrives as a `[background report]` message.
 
 ## Verification
 
