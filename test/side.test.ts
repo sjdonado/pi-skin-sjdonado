@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
-import { openHost } from "./host.ts";
-import { Side } from "./side.ts";
+import { openHost } from "../main.ts";
+import { Side } from "../main.ts";
 
 const message = (text: string, model: any) => ({ role: "assistant" as const, api: model.api, provider: model.provider, model: model.id,
   content: [{ type: "text" as const, text }], stopReason: "stop" as const, timestamp: 1,

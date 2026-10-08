@@ -3,3 +3,4 @@ bun.lock
 results-*.json
 transcript-*.jsonl
 results-ui-*/
+.check-out.*

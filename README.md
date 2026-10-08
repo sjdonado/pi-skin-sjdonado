@@ -1,94 +1,53 @@
-# pi-durable
+# pi-skin-sjdonado
 
-`pi` opens this general-purpose coding harness in the current project. It targets one-on-one UI and capability parity with the upstream Pi agent, plus the Durable additions: owned background processes, reference-only `/btw` side forks, and exact session resume. `pi-agent` runs the upstream standalone Pi CLI. The upstream package-manager-owned binary is not moved or modified; managed launchers in `~/.local/bin` provide the split.
+My scheme for running a harness in Pi. `pss` opens it in the current project; `pi-agent` runs the upstream standalone Pi CLI. The only configured dependency is `pi` itself: installed, logged in and running (plus Bun and one `bun install` for the scheme's own libraries). The upstream package-manager-owned binary is not moved or modified.
+
+The backbone is the upstream Durable sample (the `durable/` coding agent and the `vacation/` research pattern in `earendil-works/pi`), kept to one file (`main.ts`, ~1,000 lines): everything the harness runs is a task, and subagents are conversations owned by the task that started them. Log in with pi itself; credentials are shared, so there is no login UI here.
+
+## What the scheme adds
+
+- **Foreground subagents** (`subagent` tool): delegate a bounded task to a fresh child conversation, get its answer back. Same shape as the sample.
+- **Background subagents** (`background` tool): the sample's research pattern generalized. A background task owns the child conversation and posts its report back to the main conversation as a follow-up message, so the main run stays free. `/tasks` lists live background work, `/agents` switches to a running child to steer it, and the footer counts background tasks.
+- **`/btw` side questions**: an ownerless reference-only fork, the sample's thread pattern. The main run continues independently; `/back` returns.
+- **Provider-native web search** (`pi-web-search` adapted to the model, auth and per-conversation identity APIs, no model fallback), **shared skills**, and an **MCP codemode bridge** (all MCP tools through one sandboxed `codemode` tool).
+- **Persistent memory**: standardized on `pi-memory`, deferred for now (`pi install npm:pi-memory` when ready). Markdown files the model reads and writes.
 
 ## Setup and usage
 
-The host uses pinned Pi 1.1.0 libraries in this directory and Bun. Install local dependencies without lifecycle scripts:
+Needs Bun plus an installed, configured and logged-in `pi`:
 
 ```sh
-bun install --ignore-scripts --no-save --cwd "$HOME/Developer/pi-durable"
+bun install --ignore-scripts --no-save --cwd "$HOME/Developer/pi-skin-sjdonado"
 ```
 
 From any project directory:
 
 ```sh
-pi                       # new Durable session and interactive chat
-pi --continue            # reopen the latest Durable session for this project
-pi --session <id>        # reopen the exact session shown in the exit hint
-pi --check               # ephemeral startup/resource checks, no model calls
-pi --check --no-mcp      # check without starting MCP servers
-pi --models              # list configured provider catalog choices, no inference
+pss                       # new scheme session and interactive chat
+pss --continue            # reopen the latest scheme session for this project
+pss --session <id>        # reopen the exact session shown in the exit hint
+pss --check               # ephemeral startup/resource checks, no model calls
+pss --check --no-mcp      # check without starting MCP servers
 pi-agent                 # upstream CLI, existing extensions intact
-pi-agent --upstream-path # locate its underlying executable
-pi-agent --version
 ```
-
-Use `pi-agent`'s `/login` if ChatGPT subscription authentication is needed. The custom host uses Pi's native `openai-codex` OAuth provider, not a Codex CLI process adapter. Credentials are not copied into dotfiles or printed by checks. Luna is the default with medium thinking. Preferred Codex choices are GPT-6.1 Sol, GPT-6 Luna and the latest Astra entry in the installed provider catalog (currently GPT-6 Astra). The upstream CLI remains installed at its own version; the custom host's library version does not upgrade that binary.
-
-OpenCode Go uses the built-in Pi provider. If Pi has no configured Go credential, the host passes the existing OpenCode Go key from OpenCode's private auth store into the model runtime in memory. It does not rewrite the source store or persist the key in configuration. The model picker includes all configured Go catalog entries. Catalog listing is not a live entitlement or inference probe: provider errors remain visible if a particular model is unavailable to the account. `pi-agent` retains its independent auth setup.
 
 ## Chat commands
 
-- `/settings`: open supported display/runtime settings.
-- `/model`: open Pi's native searchable model picker. Explicit choices accept Codex IDs or qualified provider/model IDs, such as `/model opencode-go/deepseek-v4.1-flash`.
-- `/login` or `/login <provider>`: sign in through the upstream provider selector and OAuth/API-key dialog, same flow as the upstream agent.
-- `/thinking`: open Pi's native thinking selector; `/thinking medium` sets a level directly.
-- `/theme`: open the native theme picker with preview. System themes follow terminal light/dark changes.
-- `/resume`: select a saved conversation for the current project. Closing the harness prints `pi --session <id>` for exact resume.
-- `/btw [question]`: open a reference-context side fork without interrupting the main conversation. `/back` closes it and returns. Ctrl+C on an empty side composer also returns.
-- `/agents`: list root/child conversations. `/agents <id>` switches the chat to a child, including a running one.
-- `/compact [instructions]`: compact the shown conversation.
-- `/ps`: list active and historical background processes.
-- `/logs <id>`, `/stop <id>`, `/restart <id>`: inspect, stop or explicitly restart a process.
-- `/quit` or Ctrl+D: close the host and clean up owned processes. Ctrl+C clears the composer; press it twice while empty to exit. Esc closes a picker or aborts the shown conversation and its owned jobs.
+- `/settings`, `/model`, `/thinking`, `/theme`: Pi's native pickers. Explicit `/model provider/id` and `/thinking <level>` work inline.
+- `/resume`: select a saved conversation for the current project. Closing the harness prints `pss --session <id>` for exact resume.
+- `/btw [question]` / `/back`: side fork and return. Ctrl+C on an empty side composer also returns.
+- `/agents [id]`: list and switch root/child conversations, including running children.
+- `/tasks`: list live background tasks; selecting one opens its conversation.
+- `/compact [instructions]`, `/quit`, `/skill:<name>`: as in Pi.
 
-The UI reuses Pi's native editor, keybindings, user/assistant message components, expandable tool renderers, theme controller and fullscreen viewport/dock. It preserves Pi-agent's gaps between user turns and above the composer, rather than rendering tool output as plain chat text. Slash completion includes supported commands and shared `/skill:<name>` commands. Ctrl+L opens the model picker, Ctrl+P cycles configured choices, Shift+Tab cycles thinking, Ctrl+O expands/collapses tool output, and the native external-editor shortcut edits the draft. Input during a run steers that conversation; the follow-up shortcut queues a follow-up. The footer shows per-conversation usage, context estimate, model/thinking and managed background status. Internal UI helpers are isolated in `native-ui.ts` and pinned to Pi 1.1.0; run UI checks before upgrading that compatibility seam.
+Ask in prose for background work ("research this in the background") and the model calls the `background` tool itself; the report arrives as a `[background report]` message.
 
-## Provider-native web search
-
-`pi-web-search@1.7.0` is adapted directly to Durable's model, auth and per-conversation identity APIs. The `web_search` tool inherits the current thinking level and uses the selected provider's native search route. The package's explicit dedicated-search configuration remains available for supported routes; there is no automatic model fallback. OpenCode Go Responses-backed models have a verified request adapter. Go chat-completion models have no native search tool; its Anthropic gateway route remains unverified and is rejected before dispatch in this host. Select a supported model explicitly or use browser MCP tools instead.
-
-The plugin does not report search-request usage. Durable records an unknown-usage marker before dispatch, and the footer states that displayed cost/token totals exclude those requests. Unsupported-model and provider errors are propagated, not counted as successful searches. Mock tests cover Codex/Go request bodies, thinking, nullable-header normalization, stable Go session headers and no-fallback behavior; live search calls have not been used as acceptance evidence.
-
-## Side conversations
-
-Codex's `/btw` aliases `/side` and uses an ephemeral fork with a reference-only boundary. This host follows that design using Durable forks, not fresh-context implementation subagents. The fork inherits committed parent history and its current model/thinking, but hides inherited history from the side UI. It cannot continue the parent's work: side tools are read/search only, with no edits, shell, MCP mutation, processes or delegation. The main run continues independently. Side answers are not appended to the parent. `/back` aborts/closes the side; closed sides are hidden from the agent picker and are not automatically resumed. Storage retains their history for audit, so this is logical ephemerality rather than physical deletion.
-
-Source checked at Codex commit `2fdf047c9631c9ed01a31b62efb7891718a931a8`:
-
-- https://github.com/openai/codex/blob/2fdf047c9631c9ed01a31b62efb7891718a931a8/codex-rs/tui/src/slash_command.rs
-- https://github.com/openai/codex/blob/2fdf047c9631c9ed01a31b62efb7891718a931a8/codex-rs/tui/src/app/side.rs
-
-## Architecture and resources
-
-Durable owns the model/tool loop, persisted conversation state, queued input, cancellation and compaction. `host.ts` composes its public APIs with Pi's model runtime, coding tools, a direct MCP/code-mode bridge, subagents and process supervision. The host is not the upstream experimental Durable TUI and does not rely on its unsupported extension loading.
-
-Shared instructions come from `~/.pi/agent/AGENTS.md` and project context discovery. Skills load from shared `~/.agents/skills/`, Pi's conventional locations and project `.agents/skills/` directories up to the repository root. The model gets skill descriptions and reads `SKILL.md` as needed. Applicable nested project instructions must be read before editing.
-
-Global `~/.pi/agent/mcp.json` and project `.pi/mcp.json` supply MCP servers. The managed global definitions match OpenCode: agent-browser, chrome-devtools, ios-simulator and git-bug. All MCP tools are reachable through `codemode`. Scripts use `searchTools`, `describeTool` and `tools.<name>` in Pi's QuickJS sandbox. Nested MCP intent/outcome records are committed to Durable storage. Local coding tools and MCP operations run with the user's authority; the script sandbox itself has no ambient filesystem/network/process APIs.
-
-Subagents are Durable-owned child conversations with fresh transcripts. A parent call waits for the child answer, and parent cancellation aborts its child work. Child model choices are explicit: Codex parents default workers to Luna, while Go parents keep their provider/model instead of silently switching subscriptions. A qualified model or `inherit` can be requested explicitly. Children default to medium thinking. Recursive delegation is removed from their tool set. This host uses its own Durable integration, not the regular CLI's `pi-subagents` extension.
-
-## Process lifecycle
-
-The agent uses `bg_start`, `bg_list`, `bg_logs`, `bg_stop` and `bg_restart`. Jobs belong to a conversation: root services stay available between turns, while delegated child jobs are cleaned up when their subagent call finishes. Four active jobs are allowed; output is capped at 20 MiB, log reads at 50 KiB, and default lifetime is one hour with an explicit maximum of 24 hours.
-
-Each job runs beneath a separate supervisor. The host holds its stdin pipe open; normal close or abrupt host death closes that pipe, causing the supervisor to terminate the shell process group, escalate if needed, drain output and record the outcome. Finite command completion also cleans remaining descendants in that group. Completed/failed jobs notify the root conversation; deliberate stop and owner-exit cleanup do not automatically invoke another model turn.
-
-Launch details, status and logs persist under the session directory. On reopen, unverified running records become interrupted. The host never signals a saved PID or blindly relaunches a command. Explicit restart creates a new job identity. Detached descendants that deliberately escape the managed process group and supervisor failure itself are not covered by this prototype. Background jobs are noninteractive shell processes, not PTYs.
-
-## Persistence and checks
-
-Sessions live under `~/.pi/harness/<project-hash>/<session>/`. The host uses fsync-enabled JSONL storage and a single-owner session lock. Reopen resumes Durable's unfinished work; interrupted unsafe tool calls do not silently replay. Background OS processes follow the separate reconciliation policy above. `--check` uses temporary storage and does not replace the latest real session.
+## Verification
 
 ```sh
-bun run check
-bun test
+bun run check   # typecheck (repo files; upstream source-only drift in node_modules is filtered)
+bun test        # session locking, delegation, background report-back, side forks, search adapter, MCP sandbox smoke, UI command list and footer
+pss --check     # startup probe: model/thinking/tools/skills/MCP status plus codemode sandbox smoke
 ```
 
-Offline tests cover session locking/exact reopen, canonical project identity, shared skills, fresh child delegation, parent-preserving side forks, provider/search adapters, sandboxed dependent MCP calls, process capture/cancellation and owner-SIGKILL cleanup. An actual macOS terminal test exercises command completion, model/settings selection, session selection, composer spacing and the exact exit resume hint without inference. Unique ignored `results-ui-*` directories retain terminal logs and results, including failed capture attempts. Live MCP discovery connected all four managed servers. No fresh paid coding/search turn has been used to claim full daily-driver acceptance.
-
-An existing eval code-mode fixture remains blocked after the command rename: its isolated PATH cannot locate upstream Pi through `pi-agent`. Retained failures are under `evals/harness/results-codemode-*`. The Durable host tests pass independently. Full platform provisioning remains unverified because sudo and Docker checks are unavailable.
-
-Regular `pi-agent` keeps the earlier pinned background-task/subagent packages and code-mode configuration as a fallback. Those extensions are not loaded into the custom Durable host. General tree navigation is intentionally omitted; `/btw` provides the requested side-question workflow. Arbitrary upstream extension commands, direct image attachments and interactive PTYs are not yet ported.
+Sessions live under `~/.pi/harness/<project-hash>/<session>/` with fsync-enabled JSONL storage and a single-owner lock. `--check` uses temporary storage. No paid inference is needed for any of the above; live model turns remain manually verified.

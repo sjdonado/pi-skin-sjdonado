@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { openHost } from "./host.ts";
-import { listSessions, openSession } from "./session.ts";
+import { openHost } from "../main.ts";
+import { listSessions, openSession } from "../main.ts";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 
 test("session lock rejects concurrent owners and releases for continuation", () => {
@@ -33,7 +33,7 @@ test("Durable host persists conversations and discovers shared skills without in
   let host = await openHost({ cwd: dir, stateDir: join(dir, "state"), noMcp: true });
   try {
     const tools = (await host.conversation.agent(ctx)).tools.map(t => t.name);
-    expect(tools).toContain("codemode"); expect(tools).toContain("subagent"); expect(tools).toContain("bg_start");
+    expect(tools).toContain("codemode"); expect(tools).toContain("subagent"); expect(tools).toContain("background"); expect(tools).not.toContain("bg_start");
     expect(host.prompt.skills.map(s => s.name)).toContain("yolo");
     const marker = await host.harness.commit(tx => tx.appendEntry(host.conversation.id, { kind: "harness.test", data: { marker: "persisted" } }), ctx);
     const session = host.session.dir;
@@ -73,3 +73,46 @@ test("Durable loop delegates to a fresh child and returns its result without ext
     expect((await (await host.harness.conversation(child.id, ctx))!.agent(ctx)).tools.map(t => t.name)).not.toContain("subagent");
   } finally { await host.close(); rmSync(dir, { recursive: true, force: true }); }
 }, 15000);
+
+test("background tool frees the main turn and posts its report back without external inference", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-background-test-"));
+  const host = await openHost({ cwd: dir, stateDir: join(dir, "state"), noMcp: true });
+  const requests: string[] = [];
+  let childServed = false;
+  host.models.streamSimple = ((model: any, context: any) => {
+    const stream = createAssistantMessageEventStream();
+    // The child transcript holds only the task input; the main transcript gains
+    // the marker via the tool call, so serve the child answer exactly once.
+    const isChild = !childServed && JSON.stringify(context).includes("BG_TASK_MARKER");
+    if (isChild) childServed = true;
+    const firstMain = requests.length === 0;
+    const message: any = { role: "assistant", api: model.api, provider: model.provider, model: model.id,
+      timestamp: Date.now(), stopReason: isChild ? "stop" : firstMain ? "toolUse" : "stop",
+      content: isChild ? [{ type: "text", text: "BG_RESULT" }]
+        : firstMain ? [{ type: "toolCall", id: "bg-1", name: "background", arguments: { task: "BG_TASK_MARKER return BG_RESULT" } }]
+        : [{ type: "text", text: "MAIN_DONE" }],
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+    requests.push(isChild ? "child" : "main");
+    queueMicrotask(() => { stream.push({ type: "done", reason: message.stopReason, message }); stream.end(message); });
+    return stream;
+  }) as any;
+  try {
+    const result = await (await host.conversation.submit({ type: "input", content: "start background work" }, ctx)).wait(ctx);
+    expect(result.status).toBe("done");
+    expect(requests[0]).toBe("main");
+    // The main turn finishes while the background child still works.
+    const deadline = Date.now() + 10000;
+    for (;;) {
+      const entries = await host.harness.commit(tx => tx.scanEntries({ conversationId: host.conversation.id }, 50), ctx);
+      if (JSON.stringify(entries.items).includes("[background report] BG_RESULT")) break;
+      if (Date.now() > deadline) throw new Error("Background report never arrived");
+      await Bun.sleep(50);
+    }
+    expect(requests).toContain("child");
+    const tasks = await host.backgroundTasks();
+    expect(tasks.every(t => t.task.state.status === "terminal")).toBe(true);
+    const conversations = await host.harness.commit(tx => tx.scanConversations({}, 10), ctx);
+    expect(conversations.items).toHaveLength(2);
+  } finally { await host.close(); rmSync(dir, { recursive: true, force: true }); }
+}, 20000);
