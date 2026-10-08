@@ -1,7 +1,21 @@
 #!/usr/bin/env sh
 # Launches the pi-durable harness from this repository checkout.
+# Prefers the self-contained compiled binary for this platform; falls back to
+# running from source when it is absent (dev checkouts without a build).
 set -eu
 DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+ARCH="$(uname -m)"
+case "$ARCH" in x86_64) ARCH=x64 ;; aarch64) ARCH=arm64 ;; esac
+BIN="$DIR/bin/pi-${OS}-${ARCH}"
+WORKER="$DIR/bin/pi-worker-${OS}-${ARCH}"
+if [ -x "$BIN" ]; then
+  if [ ! -x "$WORKER" ]; then
+    printf '%s\n' "Background worker binary is missing: $WORKER. Rebuild with: bun run build:binary --cwd \"$DIR\"" >&2
+    exit 1
+  fi
+  exec "$BIN" "$@"
+fi
 if [ ! -d "$DIR/node_modules" ]; then
   printf '%s\n' "pi-durable dependencies are missing. Run: bun install --ignore-scripts --no-save --cwd \"$DIR\"" >&2
   exit 1

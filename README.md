@@ -4,6 +4,8 @@
 
 ## Setup and usage
 
+`bin/` ships self-contained compiled binaries (`pi-<os>-<arch>`, `pi-worker-<os>-<arch>`), so daily use needs no `node_modules`: `bin/pi` runs the matching binary when present and falls back to source otherwise. Rebuild for the current machine with `bun run build:binary` (or `PI_BUILD_TARGET=bun-linux-x64 sh scripts/build-binary.sh`); a future release pipeline runs the same script once per architecture.
+
 The host uses pinned Pi 1.1.0 libraries in this directory and Bun. Install local dependencies without lifecycle scripts:
 
 ```sh
@@ -32,15 +34,15 @@ OpenCode Go uses the built-in Pi provider. If Pi has no configured Go credential
 
 - `/settings`: open supported display/runtime settings.
 - `/model`: open Pi's native searchable model picker. Explicit choices accept Codex IDs or qualified provider/model IDs, such as `/model opencode-go/deepseek-v4.1-flash`.
-- `/login` or `/login <provider>`: sign in through the upstream provider selector and OAuth/API-key dialog, same flow as the upstream agent.
+- `/login` or `/login <provider>`: sign in through the upstream provider selector and OAuth/API-key dialog, same flow as the upstream agent. `/logout [provider]` removes a stored credential.
 - `/thinking`: open Pi's native thinking selector; `/thinking medium` sets a level directly.
 - `/theme`: open the native theme picker with preview. System themes follow terminal light/dark changes.
 - `/resume`: select a saved conversation for the current project. Closing the harness prints `pi --session <id>` for exact resume.
 - `/btw [question]`: open a reference-context side fork without interrupting the main conversation. `/back` closes it and returns. Ctrl+C on an empty side composer also returns.
 - `/agents`: list root/child conversations. `/agents <id>` switches the chat to a child, including a running one.
 - `/compact [instructions]`: compact the shown conversation.
-- `/ps`: list active and historical background processes.
-- `/logs <id>`, `/stop <id>`, `/restart <id>`: inspect, stop or explicitly restart a process.
+- `/ps`: list active and historical background processes as a native tool-call card.
+- `/logs <id>`, `/stop <id>`, `/restart <id>`: inspect, stop or explicitly restart a process, each recorded as a tool call so output uses the existing expandable tool renderers.
 - `/quit` or Ctrl+D: close the host and clean up owned processes. Ctrl+C clears the composer; press it twice while empty to exit. Esc closes a picker or aborts the shown conversation and its owned jobs.
 
 The UI reuses Pi's native editor, keybindings, user/assistant message components, expandable tool renderers, theme controller and fullscreen viewport/dock. It preserves Pi-agent's gaps between user turns and above the composer, rather than rendering tool output as plain chat text. Slash completion includes supported commands and shared `/skill:<name>` commands. Ctrl+L opens the model picker, Ctrl+P cycles configured choices, Shift+Tab cycles thinking, Ctrl+O expands/collapses tool output, and the native external-editor shortcut edits the draft. Input during a run steers that conversation; the follow-up shortcut queues a follow-up. The footer shows per-conversation usage, context estimate, model/thinking and managed background status. Internal UI helpers are isolated in `native-ui.ts` and pinned to Pi 1.1.0; run UI checks before upgrading that compatibility seam.
@@ -69,6 +71,31 @@ Shared instructions come from `~/.pi/agent/AGENTS.md` and project context discov
 Global `~/.pi/agent/mcp.json` and project `.pi/mcp.json` supply MCP servers. The managed global definitions match OpenCode: agent-browser, chrome-devtools, ios-simulator and git-bug. All MCP tools are reachable through `codemode`. Scripts use `searchTools`, `describeTool` and `tools.<name>` in Pi's QuickJS sandbox. Nested MCP intent/outcome records are committed to Durable storage. Local coding tools and MCP operations run with the user's authority; the script sandbox itself has no ambient filesystem/network/process APIs.
 
 Subagents are Durable-owned child conversations with fresh transcripts. A parent call waits for the child answer, and parent cancellation aborts its child work. Child model choices are explicit: Codex parents default workers to Luna, while Go parents keep their provider/model instead of silently switching subscriptions. A qualified model or `inherit` can be requested explicitly. Children default to medium thinking. Recursive delegation is removed from their tool set. This host uses its own Durable integration, not the regular CLI's `pi-subagents` extension.
+
+Running subagents stay visible without new UI: `/agents` lists root/child conversations (running children included) and switches between them, the footer shows managed background-process counts, and `/ps` renders owned jobs as tool cards. The upstream `pi-subagents` FleetView and `/subagents-fleet` live inspector remain the reference pattern for a persistent fleet view; no equivalent dock is built here.
+
+## Verification
+
+Automated, no inference:
+
+```sh
+bun run check   # typecheck (repo files; upstream source-only drift in node_modules is filtered)
+bun test        # 21 tests: session locking, delegation, search adapters, MCP sandbox smoke, local tool-call cards, UI rendering, headless terminal
+pi --check      # startup probe: model/thinking/tools/skills/MCP status plus codemode sandbox smoke (`"codemode": "ok"`)
+bun run build:binary  # refresh bin/pi-<os>-<arch> + bin/pi-worker-<os>-<arch> for this machine
+```
+
+`mcp.test.ts` executes a real `CodemodeSandbox` script, so a broken install (for example a missing `quickjs-wasi/quickjs.wasm` after a stale checkout or pruned `node_modules`) fails there and in `pi --check` with a reinstall hint instead of surfacing mid-turn as `Cannot find module 'quickjs-wasi/quickjs.wasm'`. Reinstall with `bun install --ignore-scripts --no-save --cwd "$HOME/Developer/pi-durable"`.
+
+Manual TUI cases (terminal, no paid calls except where noted):
+
+- `/login` with no arg shows account vs API-key choice, then the native provider picker; `/login anthropic` jumps straight to Anthropic; ambient-only providers explain they are configured outside Pi. `/logout` lists and removes stored credentials.
+- `/model` lists every available catalog entry after login; Ctrl+P cycles the same set.
+- `/btw [question]` forks a read-only side conversation hiding inherited history; `/back` (or Ctrl+C on an empty side composer) returns. Main run continues independently.
+- `/agents` lists Main/Side/Agent conversations; `/agents <id>` switches, including to a running child.
+- `/ps`, `/logs <id>`, `/stop <id>`, `/restart <id>` render as expandable tool cards in the transcript (paid model turn needed only to exercise a full background lifecycle, not for the rendering itself).
+- `/resume` and the exit hint print the exact `pi --session <id>` for reopen.
+- Compiled-binary check: `bin/pi --check` dispatches to `bin/pi-<os>-<arch>` with no `node_modules` needed; background start/stop/log output verified against `bin/pi-worker-<os>-<arch>` (echo completes, logs match, stop reports `owner-exited`).
 
 ## Process lifecycle
 

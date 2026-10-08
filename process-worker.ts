@@ -1,8 +1,14 @@
 // A separate supervisor owns the shell group. Parent pipe EOF also arrives after SIGKILL.
 import { spawn } from "node:child_process";
-import { createWriteStream, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { createWriteStream, readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 
+// argv[2] in both modes: dev runs `bun process-worker.ts <job>`, while compiled
+// binaries run with argv ["bun", "/$bunfs/root/<entry>", "<job>"].
 const file = process.argv[2];
+if (!file || !file.endsWith(".json") || !existsSync(file)) {
+  console.error(`process-worker: missing job file argument in ${JSON.stringify(process.argv.slice(1))}`);
+  process.exit(2);
+}
 const job = JSON.parse(readFileSync(file, "utf8"));
 function save() {
   writeFileSync(file + ".tmp", JSON.stringify(job), { mode: 0o600 });

@@ -19,6 +19,7 @@ else
   git -C "$DIR" pull --ff-only
 fi
 bun install --ignore-scripts --no-save --cwd "$DIR"
+sh "$DIR/scripts/build-binary.sh"
 mkdir -p "$BIN_DIR"
 ln -snf "$DIR/bin/pi" "$BIN_DIR/pi"
 echo "Installed pi from $DIR. Run: pi --check"

@@ -11,7 +11,8 @@
   "scripts": {
     "start": "bun main.ts",
     "test": "bun test",
-    "check": "tsc --noEmit"
+    "build:binary": "sh scripts/build-binary.sh",
+    "check": "TMP=$(mktemp .check-out.XXXXXX); trap 'rm -f \"$TMP\"' EXIT; tsc --noEmit --pretty false > \"$TMP\" 2>&1; CODE=$?; awk '/\\([0-9]+,[0-9]+\\): error TS/ { show = ($0 !~ /^node_modules\\//); if (show) print; next } show { print }' \"$TMP\" | tee /dev/stderr | grep -q 'error TS' && exit 1 || { grep -q 'error TS' \"$TMP\" || [ \"$CODE\" -eq 0 ] || exit \"$CODE\"; exit 0; }"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.1.0",

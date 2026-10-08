@@ -44,6 +44,35 @@ test("Durable host persists conversations and discovers shared skills without in
   } finally { await host.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("local slash tools render as native tool calls without inference", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-local-tool-test-"));
+  const host = await openHost({ cwd: dir, stateDir: join(dir, "state"), noMcp: true });
+  try {
+    await host.localTool("bg_list", {}, () => host.processes.list());
+    const entries = await host.harness.commit(tx => tx.scanEntries({ conversationId: host.conversation.id }, 10), ctx);
+    const call = entries.items.find(e => e.kind === "pi.assistant" && JSON.stringify(e.model ?? []).includes("bg_list"));
+    const result = entries.items.find(e => e.kind === "pi.tool-result" && JSON.stringify(e.model ?? []).includes("toolCallId"));
+    expect(call).toBeDefined();
+    expect(result).toBeDefined();
+    const callMsg: any = (call!.model as any[])[0];
+    expect(callMsg.role).toBe("assistant");
+    expect(callMsg.stopReason).toBe("toolUse");
+    expect(callMsg.content).toHaveLength(1);
+    expect(callMsg.content[0].type).toBe("toolCall");
+    expect(callMsg.content[0].name).toBe("bg_list");
+    expect(callMsg.content[0].arguments).toEqual({});
+    const resultMsg: any = (result!.model as any[])[0];
+    expect(resultMsg.role).toBe("toolResult");
+    expect(resultMsg.toolCallId).toBe(callMsg.content[0].id);
+    expect(resultMsg.toolName).toBe("bg_list");
+    expect(resultMsg.isError).toBe(false);
+    expect(JSON.stringify(resultMsg.content)).toContain("[]");
+    await host.localTool("bg_logs", { id: "missing" }, () => { throw new Error("nope"); });
+    const after = await host.harness.commit(tx => tx.scanEntries({ conversationId: host.conversation.id }, 10), ctx);
+    expect(JSON.stringify(after.items[0]?.model)).toContain("nope");
+  } finally { await host.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("Durable loop delegates to a fresh child and returns its result without external inference", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-delegate-test-"));
   const host = await openHost({ cwd: dir, stateDir: join(dir, "state"), noMcp: true });

@@ -121,30 +121,61 @@ export async function runTui(host: Host) {
     }
     return options.sort((a, b) => a.name.localeCompare(b.name));
   }
-  async function startLogin(providerRef?: string) {
-    const all = loginOptions();
-    const match = providerRef ? all.find(o => o.id.toLowerCase() === providerRef.toLowerCase()) : undefined;
-    if (providerRef && !match) throw new Error(`Unknown provider: ${providerRef}`);
-    const options = match ? [match] : all;
-    if (!options.length) throw new Error("No login providers available.");
-    const choice = await new Promise<LoginOption | undefined>(resolve => {
+  function refreshModelAutocomplete() {
+    editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands(host.prompt.skills, modelChoices(host.models).map(m => `${m.provider}/${m.id}`)), host.session.cwd));
+  }
+  async function pickAuthType(): Promise<"oauth" | "api_key" | undefined> {
+    return new Promise(resolve => {
+      const list = new SelectList([
+        { value: "oauth", label: "Sign in with an account", description: "OAuth subscription where available" },
+        { value: "api_key", label: "Sign in with an API key", description: "Stored key for metered providers" },
+      ], 8, getSelectListTheme());
+      list.onSelect = item => { restoreEditor(); resolve(item.value as "oauth" | "api_key"); };
+      list.onCancel = () => { restoreEditor(); resolve(undefined); };
+      showSelector(list);
+    });
+  }
+  async function pickLoginOption(options: LoginOption[]): Promise<LoginOption | undefined> {
+    return new Promise(resolve => {
       showSelector(new OAuthSelectorComponent("login", options,
         (providerId: string, authType: string) => { const found = options.find(o => o.id === providerId && o.authType === authType); restoreEditor(); resolve(found); },
         () => { restoreEditor(); resolve(undefined); }));
     });
-    if (!choice) return;
+  }
+  function findLoginOptions(providerRef: string): LoginOption[] {
+    const needle = providerRef.trim().toLowerCase();
+    return loginOptions().filter(o => o.id.toLowerCase() === needle || o.name.toLowerCase() === needle);
+  }
+  async function runProviderLogin(choice: LoginOption) {
+    // Ambient-only providers omit login and are configured outside Pi.
+    if (choice.authType === "api_key" && !(choice.method as ApiKeyAuth | undefined)?.login) {
+      const dialog = new LoginDialogComponent(tui, choice.id, () => restoreEditor(), choice.name, `${choice.name} setup`);
+      dialog.showInfo(`${(choice.method as { name?: string })?.name ?? "Authentication"} is configured outside Pi.`, [], true);
+      showSelector(dialog);
+      return;
+    }
     const dialog = new LoginDialogComponent(tui, choice.id, () => {}, choice.name);
     showSelector(dialog);
+    const withCancel = <T>(work: Promise<T>, signal?: AbortSignal): Promise<T> => {
+      if (!signal) return work;
+      if (signal.aborted) { work.catch(() => {}); return Promise.reject(new Error("Login cancelled")); }
+      return new Promise<T>((resolve, reject) => {
+        const onAbort = () => reject(new Error("Login cancelled"));
+        signal.addEventListener("abort", onAbort, { once: true });
+        work.then(v => { signal.removeEventListener("abort", onAbort); resolve(v); },
+          e => { signal.removeEventListener("abort", onAbort); reject(e); });
+      });
+    };
     try {
       await host.models.login(choice.id, choice.authType, {
         signal: dialog.signal,
         prompt: async (prompt: AuthPrompt) => {
-          if (prompt.type === "manual_code") return dialog.showManualInput(prompt.message);
+          if (prompt.type === "manual_code") return withCancel(dialog.showManualInput(prompt.message), prompt.signal);
           if (prompt.type === "select") {
-            const answer = await dialog.showPrompt(`${prompt.message}\n${prompt.options.map(o => `- ${o.label}`).join("\n")}`);
+            const answer = await withCancel(dialog.showPrompt(`${prompt.message}\n${prompt.options.map(o => `- ${o.label}`).join("\n")}`), prompt.signal);
             return prompt.options.find(o => o.label === answer.trim() || o.id === answer.trim())?.id ?? answer.trim();
           }
-          return dialog.showPrompt(prompt.message, prompt.placeholder);
+          return withCancel(dialog.showPrompt(prompt.message, prompt.placeholder), prompt.signal);
         },
         notify: (event: AuthEvent) => {
           if (event.type === "auth_url") dialog.showAuth(event.url, event.instructions);
@@ -154,13 +185,81 @@ export async function runTui(host: Host) {
         },
       }, { getDeviceId: () => host.settings.getOrCreateDeviceId() });
       restoreEditor();
-      note(`Signed in to ${choice.name}.`);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      try {
+        const result = await host.models.refresh({ providers: [choice.id], signal: controller.signal });
+        if (result.aborted) note(`Signed in to ${choice.name}; catalog refresh timed out, using cached models.`);
+        else if (result.errors.size > 0) note(`Signed in to ${choice.name}; catalog could not be refreshed, using cached models.`);
+        else note(`Signed in to ${choice.name}. Use /model to select a model.`);
+      } catch (error) {
+        note(`Signed in to ${choice.name}; catalog refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+      } finally { clearTimeout(timeout); }
+      refreshModelAutocomplete();
     } catch (error) {
       restoreEditor();
       const message = error instanceof Error ? error.message : String(error);
       if (message === "Login cancelled") return;
+      if (error instanceof Error && error.name === "CredentialSynchronizationError") {
+        note(`Saved credential for ${choice.name}, but local model state could not be synchronized: ${message}`);
+        return;
+      }
       throw new Error(`Failed to sign in to ${choice.name}: ${message}`);
     }
+  }
+  async function startLogin(providerRef?: string) {
+    if (providerRef) {
+      const matches = findLoginOptions(providerRef);
+      if (!matches.length) throw new Error(`Unknown provider: ${providerRef}`);
+      if (matches.length === 1) { await runProviderLogin(matches[0]); return; }
+      if (new Set(matches.map(m => m.id)).size > 1) {
+        const choice = await pickLoginOption(matches);
+        if (!choice) return;
+        await runProviderLogin(choice);
+        return;
+      }
+      const authType = await pickAuthType();
+      if (!authType) return;
+      const choice = matches.find(o => o.authType === authType);
+      if (!choice) throw new Error(`No ${authType} login for ${matches[0].name}`);
+      await runProviderLogin(choice);
+      return;
+    }
+    const authType = await pickAuthType();
+    if (!authType) return;
+    const options = loginOptions().filter(o => o.authType === authType);
+    if (!options.length) throw new Error(authType === "oauth" ? "No account providers available." : "No API key providers available.");
+    const choice = await pickLoginOption(options);
+    if (!choice) return;
+    await runProviderLogin(choice);
+  }
+  async function startLogout(providerRef?: string) {
+    const stored = await host.models.listCredentials({ signal: AbortSignal.timeout(15000) });
+    if (!stored.length) { note("No stored credentials to remove. /logout only removes credentials saved by /login; environment variables are unchanged."); return; }
+    const options: LoginOption[] = stored.map(({ providerId, type }) => {
+      const provider = host.models.getProvider(providerId);
+      return { id: providerId, name: provider?.name ?? providerId, authType: type as "oauth" | "api_key", method: undefined, status: { type: type as "oauth" | "api_key", source: "stored credential" } as AuthCheck, subscription: (provider?.auth.oauth as { isSubscription?: boolean } | undefined)?.isSubscription === true };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+    const needle = providerRef?.trim().toLowerCase();
+    const filtered = needle ? options.filter(o => o.id.toLowerCase() === needle || o.name.toLowerCase() === needle) : options;
+    if (providerRef && !filtered.length) throw new Error(`No stored credential for: ${providerRef}`);
+    const choice = filtered.length === 1 ? filtered[0] : await new Promise<LoginOption | undefined>(resolve => {
+      showSelector(new OAuthSelectorComponent("logout", filtered,
+        (providerId: string) => { const found = filtered.find(o => o.id === providerId); restoreEditor(); resolve(found); },
+        () => { restoreEditor(); resolve(undefined); }));
+    });
+    if (!choice) return;
+    try {
+      await host.models.logout(choice.id, { signal: AbortSignal.timeout(15000) });
+    } catch (error) {
+      if (error instanceof Error && error.name === "CredentialSynchronizationError") {
+        note(`Credentials removed for ${choice.name}, but local model state could not be synchronized: ${error.message}`);
+        return;
+      }
+      throw error;
+    }
+    note(choice.authType === "oauth" ? `Logged out of ${choice.name}` : `Removed stored API key for ${choice.name}. Environment variables are unchanged.`);
+    refreshModelAutocomplete();
   }
   async function command(text: string, whenBusy: "steer" | "followUp" = "steer") {
     const [name, ...rest] = text.split(/\s+/); const arg = rest.join(" ");
@@ -184,12 +283,21 @@ export async function runTui(host: Host) {
         () => { restoreEditor(); themes.applyFromSettings(); }, name => themes.preview(name));
       showSelector(picker, picker.getSelectList()); return;
     }
-    if (name === "/ps") return note(JSON.stringify(host.processes.list(), null, 2));
-    if (name === "/logs") return note(host.processes.logs(arg));
-    if (name === "/stop") return note(JSON.stringify(await host.processes.stop(arg)));
-    if (name === "/restart") return note(JSON.stringify(host.processes.restart(arg)));
+    if (name === "/ps") { await host.localTool("bg_list", {}, () => host.processes.list()); return; }
+    if (name === "/logs") {
+      if (!arg) throw new Error("Usage: /logs <id>");
+      await host.localTool("bg_logs", { id: arg }, () => host.processes.logs(arg)); return;
+    }
+    if (name === "/stop") {
+      if (!arg) throw new Error("Usage: /stop <id>");
+      await host.localTool("bg_stop", { id: arg }, () => host.processes.stop(arg)); return;
+    }
+    if (name === "/restart") {
+      if (!arg) throw new Error("Usage: /restart <id>");
+      await host.localTool("bg_restart", { id: arg }, () => host.processes.restart(arg)); return;
+    }
     if (name === "/login") { await startLogin(arg || undefined); return; }
-    if (name === "/login") { await startLogin(arg || undefined); return; }
+    if (name === "/logout") { await startLogout(arg || undefined); return; }
     if (name === "/model") {
       if (!arg) return selectModel();
       await host.conversation.configure({ model: modelReference(arg, modelChoices(host.models)) }, ctx); return;
@@ -210,7 +318,7 @@ export async function runTui(host: Host) {
       return;
     }
     if (name === "/compact") { await host.conversation.compact(arg || undefined, ctx); return; }
-    if (name === "/help") return note("/settings /model /login /thinking /agents /compact /ps /logs ID /stop ID /restart ID /quit. Ctrl+L selects model; Ctrl+P cycles models; Shift+Tab cycles thinking; Ctrl+O expands tools. Esc closes a picker or aborts; Ctrl+C clears (press twice while empty to exit).");
+    if (name === "/help") return note("/settings /model /login /logout /thinking /agents /compact /ps /logs ID /stop ID /restart ID /quit. Ctrl+L selects model; Ctrl+P cycles models; Shift+Tab cycles thinking; Ctrl+O expands tools. Esc closes a picker or aborts; Ctrl+C clears (press twice while empty to exit).");
     if (name.startsWith("/skill:")) {
       const skill = host.prompt.skills.find(s => s.name === name.slice(7));
       if (!skill) throw new Error("Unknown skill");

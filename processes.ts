@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync, openSync, closeSync, readSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync, openSync, closeSync, readSync, statSync, accessSync, constants } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 
@@ -40,9 +40,31 @@ export class Processes {
     const job: Job = { id, name, command, owner, cwd: this.cwd, timeoutMs,
       status: "starting", output: join(this.dir, id + ".log"), startedAt: Date.now() };
     writeFileSync(job.output, "", { mode: 0o600 }); this.save(job);
-    const child = spawn(process.execPath, [join(import.meta.dir, "process-worker.ts"), this.file(id)], {
-      cwd: this.cwd, stdio: ["pipe", "ignore", "ignore"],
-    });
+    // Compiled `bin/pi-*` binaries cannot run the worker source, so they spawn
+    // the sibling `bin/pi-worker-*` binary (whatever the main binary is named).
+    // Dev (`bun`) runs the source directly. A compiled binary without its worker
+    // fails fast instead of leaving the job stuck at starting.
+    const exec = basename(process.execPath);
+    const isBun = exec === "bun" || exec === "bun-debug";
+    const workerBin = join(dirname(process.execPath), `pi-worker-${process.platform}-${process.arch}`);
+    const executable = (file: string) => { try { accessSync(file, constants.X_OK); return true; } catch { return false; } };
+    const supervise = (): ReturnType<typeof spawn> => {
+      if (executable(workerBin))
+        return spawn(workerBin, [this.file(id)], { cwd: this.cwd, stdio: ["pipe", "ignore", "ignore"] });
+      if (isBun)
+        return spawn(process.execPath, [join(import.meta.dir, "process-worker.ts"), this.file(id)], {
+          cwd: this.cwd, stdio: ["pipe", "ignore", "ignore"],
+        });
+      throw new Error(`Background worker binary missing: ${workerBin}. Rebuild with bun run build:binary.`);
+    };
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = supervise();
+    } catch (error) {
+      job.status = "failed";
+      (job as unknown as Record<string, unknown>).error = error instanceof Error ? error.message : String(error);
+      this.save(job); throw error;
+    }
     this.children.set(id, child);
     child.on("error", error => { job.status = "failed"; this.save(job); this.children.delete(id); });
     child.on("exit", () => { this.children.delete(id); if (!this.closing) this.notify(this.get(id)); });

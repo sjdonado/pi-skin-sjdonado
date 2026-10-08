@@ -6,8 +6,9 @@ import type { JsonValue } from "@earendil-works/chord";
 
 // The source-only package targets older header types. Keep its compatibility boundary
 // typed locally and normalize nullable Pi 1.1 headers instead of modifying package files.
-const registerWebSearch = (await import(new URL("./node_modules/pi-web-search/src/index.ts", import.meta.url).href)).default as (pi: ExtensionAPI) => void;
-const { webSearch, WebSearchSchema } = await import(new URL("./node_modules/pi-web-search/src/web_search.ts", import.meta.url).href) as {
+// Static specifiers (not file URLs) so `bun build --compile` bundles the package.
+const registerWebSearch = (await import("pi-web-search")).default as (pi: ExtensionAPI) => void;
+const { webSearch, WebSearchSchema } = await import("pi-web-search/src/web_search.ts") as {
   WebSearchSchema: TSchema;
   webSearch: (id: string, args: { query: string; urls?: string[] }, signal: AbortSignal, update: AgentToolUpdateCallback | undefined,
     context: ExtensionContext, thinking?: ModelThinkingLevel) => Promise<AgentToolResult<Record<string, JsonValue>>>;

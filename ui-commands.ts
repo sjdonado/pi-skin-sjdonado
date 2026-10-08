@@ -10,6 +10,7 @@ export function slashCommands(skills: Skill[], models: readonly string[] = MODEL
     { name: "settings", description: "Open harness settings" },
     { name: "model", description: "Select provider/model", argumentHint: "[provider/model]", getArgumentCompletions: choices(models) },
     { name: "login", description: "Sign in to a provider", argumentHint: "[provider]" },
+    { name: "logout", description: "Remove a stored provider credential", argumentHint: "[provider]" },
     { name: "thinking", description: "Select thinking level", argumentHint: "[level]", getArgumentCompletions: choices(THINKING_LEVELS) },
     { name: "theme", description: "Select terminal theme" },
     { name: "resume", description: "Resume a saved project conversation" },

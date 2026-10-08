@@ -31,5 +31,5 @@ export function modelReference(input: string, models: readonly Model<any>[]) {
 }
 
 export function modelChoices(models: Pick<ModelRuntime, "getAvailableSnapshot">) {
-  return preferredModels(models.getAvailableSnapshot());
+  return [...models.getAvailableSnapshot()];
 }

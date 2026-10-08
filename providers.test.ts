@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { preferredModels, modelReference, useOpenCodeGo } from "./providers.ts";
+import { preferredModels, modelChoices, modelReference, useOpenCodeGo } from "./providers.ts";
 
 test("provider catalog keeps preferred Codex models/latest Astra and every configured Go model", () => {
   const entries = ["gpt-5-sol", "gpt-6.1-sol", "gpt-6-luna", "gpt-5-astra", "gpt-6-astra"].map(id => ({ provider: "openai-codex", id }));
@@ -11,6 +11,24 @@ test("provider catalog keeps preferred Codex models/latest Astra and every confi
   expect(models.map(m => m.id)).toEqual(["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra", "deepseek-v4.1-flash"]);
   expect(modelReference("opencode-go/deepseek-v4.1-flash", models)).toEqual({ provider: "opencode-go", modelId: "deepseek-v4.1-flash" });
   expect(() => modelReference("gpt-5-sol", models)).toThrow();
+});
+test("model picker exposes every available catalog entry, not just preferred Codex/Go models", () => {
+  const snapshot = [
+    { provider: "anthropic", id: "claude-opus" },
+    { provider: "openai-codex", id: "gpt-6-luna" },
+    { provider: "opencode-go", id: "deepseek-v4.1-flash" },
+  ];
+  const choices = modelChoices({ getAvailableSnapshot: () => snapshot } as any);
+  expect(choices.map(m => `${(m as any).provider}/${(m as any).id}`)).toEqual([
+    "anthropic/claude-opus", "openai-codex/gpt-6-luna", "opencode-go/deepseek-v4.1-flash",
+  ]);
+});
+test("model picker passes through the live runtime snapshot unfiltered", async () => {
+  const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
+  const models = await ModelRuntime.create();
+  const snapshot = models.getAvailableSnapshot();
+  expect(snapshot.length).toBeGreaterThan(0);
+  expect(modelChoices(models).map(m => `${m.provider}/${m.id}`)).toEqual(snapshot.map(m => `${m.provider}/${m.id}`));
 });
 test("Go credential handoff is in-memory and does not rewrite the source store", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-go-test-")), file = join(dir, "auth.json");

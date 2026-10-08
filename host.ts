@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { Harness, createRegistry, type Conversation, type HarnessSettings } from "@earendil-works/pi-durable";
 import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
@@ -100,10 +101,37 @@ export async function openHost(options: { cwd: string; resume?: boolean; session
         if (!sideParent) return;
         await closeSide(opened, shown); shown = sideParent; sideParent = undefined;
       },
+      // Local slash commands (e.g. /ps) recorded as tool calls so the transcript
+      // renders them with Pi's native expandable tool renderers. No inference.
+      async localTool(name: string, args: Record<string, unknown>, run: () => unknown) {
+        const target = shown;
+        const callId = randomUUID();
+        const current = await target.agent(ctx);
+        const provider = current.model?.provider ?? settings.getDefaultProvider() ?? "openai-codex";
+        const modelId = current.model?.modelId ?? settings.getDefaultModel() ?? "gpt-6-luna";
+        const api = (models.getModel(provider, modelId) as any)?.api ?? "openai-codex-responses";
+        const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+        let text: string, isError = false;
+        try {
+          const value = await run();
+          text = typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "null";
+        } catch (error) { text = error instanceof Error ? error.message : String(error); isError = true; }
+        await opened.commit(async tx => {
+          await tx.appendEntry(target.id, { kind: "pi.assistant", model: [{
+            role: "assistant", api, provider, model: modelId, timestamp: Date.now(), stopReason: "toolUse",
+            content: [{ type: "toolCall", id: callId, name, arguments: args }], usage }] as any });
+          await tx.appendEntry(target.id, { kind: "pi.tool-result", model: [{
+            role: "toolResult", toolCallId: callId, toolName: name,
+            content: [{ type: "text", text }], isError, timestamp: Date.now() }] as any });
+        }, ctx);
+      },
       async switchConversation(id: number) {
-        if (sideParent) { await closeSide(opened, shown); sideParent = undefined; }
+        if (id === shown.id) return;
         const next = await opened.conversation(id as any, ctx);
-        if (!next) throw new Error("Conversation not found"); shown = next;
+        if (!next) throw new Error("Conversation not found");
+        if (sideParent) { await closeSide(opened, shown); sideParent = undefined; }
+        shown = next;
       },
       async abort() { await shown.abort(ctx); await processes.stopOwner(shown.id); },
       resume() { opened.resume(); },
