@@ -1,0 +1,608 @@
+import { Type } from "typebox";
+import type { Context } from "@earendil-works/chord";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import {
+	AssistantEntry,
+	configure,
+	defineDoc,
+	defineExtension,
+	defineTask,
+	defineTool,
+	section,
+	ProviderDoc,
+	type ConversationId,
+	type PromptInput,
+} from "@earendil-works/pi-durable";
+import {
+	ModelRegistry,
+	formatSkillsForPrompt,
+	getAgentDir,
+	loadProjectContextFiles,
+	loadSkills,
+	type ModelRuntime,
+	type AgentToolResult,
+	type AgentToolUpdateCallback,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type SettingsManager,
+	type Skill,
+	type ToolDefinition,
+	type ToolRenderers,
+} from "@earendil-works/pi-coding-agent";
+import { buildSystemPromptSections } from "./node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js";
+import { bashToolSystemPromptContribution } from "./node_modules/@earendil-works/pi-coding-agent/dist/core/tools/bash.js";
+import { editToolSystemPromptContribution } from "./node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit.js";
+import { readToolSystemPromptContribution } from "./node_modules/@earendil-works/pi-coding-agent/dist/core/tools/read.js";
+import { writeToolSystemPromptContribution } from "./node_modules/@earendil-works/pi-coding-agent/dist/core/tools/write.js";
+import { McpClient, StdioTransport, StreamableHttpTransport } from "@earendil-works/pi-mcp";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import type { TSchema } from "typebox";
+import type { JsonValue } from "@earendil-works/chord";
+
+// ─── prompt: pi's system prompt as one extension ────────────────────────────
+
+const CONTRIBUTIONS = {
+	read: readToolSystemPromptContribution,
+	bash: bashToolSystemPromptContribution,
+	edit: editToolSystemPromptContribution,
+	write: writeToolSystemPromptContribution,
+};
+
+/** pi's section order; `buildSystemPromptSections()` omits the ones without content. */
+const KEYS = ["preamble", "tools", "rules", "docs", "project_context", "skills", "cwd"] as const;
+
+export function createSkinPrompt(settings: SettingsManager, fallbackCwd: string) {
+	const resources = new Map<string, { contextFiles: { path: string; content: string }[]; skills: Skill[] }>();
+	const load = (cwd: string) => {
+		let found = resources.get(cwd);
+		if (found === undefined) {
+			const agentDir = getAgentDir();
+			found = {
+				contextFiles: loadProjectContextFiles({ cwd, agentDir }),
+				skills: loadSkills({ cwd, agentDir, skillPaths: settings.getSkillPaths(), includeDefaults: true }).skills,
+			};
+			resources.set(cwd, found);
+		}
+		return found;
+	};
+	const built = new WeakMap<PromptInput, Record<string, string>>();
+	const build = (input: PromptInput): Record<string, string> => {
+		let sections = built.get(input);
+		if (sections === undefined) {
+			sections = buildSections(input);
+			built.set(input, sections);
+		}
+		return sections;
+	};
+	const buildSections = (input: PromptInput): Record<string, string> => {
+		const cwd = input.env?.cwd ?? input.agent.cwd ?? fallbackCwd;
+		const selectedTools = input.agent.tools.map((tool) => tool.name);
+		const snippets: Record<string, string> = {};
+		const guidelines: Record<string, string[]> = {};
+		for (const name of selectedTools) {
+			const contribution = CONTRIBUTIONS[name as keyof typeof CONTRIBUTIONS];
+			if (contribution === undefined) continue;
+			snippets[name] = contribution.snippet;
+			guidelines[name] = [...contribution.guidelines];
+		}
+		return {
+			preamble:
+				"You are Pi, a general-purpose interactive coding harness. Work in the current project, investigate before editing, use the project's checks, and complete the user's requested scope. Read applicable nested project instructions before edits. Load a relevant skill by reading its SKILL.md. Do not read environment-secret files. Do not commit, push or publish without user authorization. Use foreground bash for finite work and the background tool for work that should outlive this turn. Subagents have fresh contexts: give each the task and authoritative file paths, not hidden conversation assumptions.",
+			...buildSystemPromptSections({
+				cwd,
+				selectedTools,
+				toolSnippets: snippets,
+				toolGuidelines: guidelines,
+				...load(cwd),
+			}),
+		};
+	};
+	return defineExtension({
+		name: "skin-prompt",
+		sections: KEYS.map((key) => section(key, (input) => build(input)[key], { tag: false })),
+	});
+}
+
+// ─── shared answers ─────────────────────────────────────────────────────────
+
+async function answerText(entry: { model?: readonly unknown[] } | undefined): Promise<string> {
+	const message = entry?.model?.[0] as { role?: string; content?: { type: string; text?: string }[] } | undefined;
+	return message?.role === "assistant"
+		? (message.content ?? []).flatMap((part) => (part.type === "text" && part.text ? [part.text] : [])).join("\n")
+		: "";
+}
+
+function resolveChildModel(
+	parent: { provider?: string; modelId?: string } | undefined,
+	requested: string | undefined,
+	known: (provider: string, modelId: string) => unknown,
+) {
+	const fallback =
+		parent?.provider === "openai-codex" ? { provider: "openai-codex", modelId: "gpt-6-luna" } : parent;
+	const [provider, ...parts] = requested?.split("/") ?? [];
+	const selected =
+		requested === "inherit"
+			? parent
+			: requested
+				? parts.length
+					? { provider, modelId: parts.join("/") }
+					: { provider: "openai-codex", modelId: requested }
+				: fallback;
+	if (!selected?.provider || !selected?.modelId || !known(selected.provider, selected.modelId)) {
+		throw new Error("Subagent model is not in the configured catalog");
+	}
+	return selected as { provider: string; modelId: string };
+}
+
+// ─── subagent: foreground delegation ────────────────────────────────────────
+
+const subagent = defineTool({
+	name: "subagent",
+	description:
+		"Delegate a bounded task to a fresh child conversation and get its answer back. Supply authoritative file paths and acceptance checks. Parent cancellation aborts child work. Returns the child's answer; no automatic model fallback or recursive delegation.",
+	parameters: Type.Object({
+		task: Type.String(),
+		model: Type.Optional(
+			Type.String({
+				description:
+					"Configured provider/model, a bare Codex model ID, or inherit. Defaults to Luna for Codex parents and the current model otherwise.",
+			}),
+		),
+	}),
+	// A rerun after a crash finds the child it created and the submission it made.
+	replay: "safe",
+	execute: async (args, api, context) => {
+		const parent = await api.agent(context);
+		const selected = resolveChildModel(parent.model, args.model, (p, m) => api.models.getModel(p, m));
+		const childId = await api.commit(async (tx) => {
+			const existing = (await tx.scanConversations({ ownerTaskId: api.taskId }, 1)).items[0];
+			if (existing !== undefined) return existing.id;
+			const child = await tx.createConversation({ ownership: { kind: "task", taskId: api.taskId } });
+			await configure(tx, child.id, {
+				model: selected,
+				thinkingLevel: "medium",
+				tools: { remove: [subagent, background, btw] },
+			});
+			return child.id;
+		}, context);
+		await api.details({ conversationId: childId }, context);
+		const child = (await api.conversation(childId, context))!;
+		const result = await (
+			await child.submit({ type: "input", content: args.task, requestId: `subagent:${api.taskId}` }, context)
+		).wait(context);
+		if (result.status !== "done" || result.type !== "input") {
+			throw new Error(`Child did not answer: ${result.status}`);
+		}
+		const entry = await api.commit((tx) => tx.entry(result.answer), context);
+		return {
+			content: [{ type: "text" as const, text: await answerText(entry) }],
+			details: { conversationId: childId },
+		};
+	},
+});
+
+// ─── background: the sample pattern, generalized ────────────────────────────
+// A background task owns the child conversation and posts its report back to
+// the main conversation as a follow-up message, so the main run stays free.
+
+type BackgroundState = { phase: "deliver" } | { phase: "report"; report: string };
+
+const BackgroundWork = defineTask<{ task: string; model: { provider: string; modelId: string } }, BackgroundState, null>({
+	name: "skin.background",
+	version: 1,
+	initial: () => ({ phase: "deliver" }),
+	phases: {
+		deliver: async (task, runtime, context) => {
+			// The child conversation is owned by this task. A rerun after a crash finds it again.
+			let owned: ConversationId | undefined;
+			await runtime.commit(async (tx) => {
+				owned = (await tx.scanConversations({ ownerTaskId: task.id }, 1)).items[0]?.id;
+				return undefined;
+			}, context);
+			const child = await runtime.conversation(owned as ConversationId, context);
+			// A rerun after a crash gets the same submission back.
+			const settled = await (
+				await child!.submit(
+					{ type: "input", content: task.input.task, requestId: `background:${task.id}` },
+					context,
+				)
+			).wait(context);
+			await runtime.commit(async (tx) => {
+				let report = `[background report] The background work failed: ${settled.status === "unanswered" ? (settled as { reason?: string }).reason : "?"}`;
+				if (settled.status === "done" && settled.type === "input") {
+					report = `[background report] ${await answerText(await tx.entry(AssistantEntry, settled.answer))}`;
+				}
+				return { status: "running", checkpoint: { phase: "report", report } };
+			}, context);
+		},
+		report: async (task, runtime, context) => {
+			const main = await runtime.conversation(runtime.conversationId, context);
+			await main!.submit(
+				{
+					type: "input",
+					content: task.state.checkpoint.report,
+					whenBusy: "followUp",
+					requestId: `background-report:${task.id}`,
+				},
+				context,
+			);
+			await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
+		},
+	},
+	abort: (_task, runtime, context) =>
+		runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+});
+
+const background = defineTool({
+	name: "background",
+	description:
+		"Start bounded work in the background: a child conversation works while the main conversation stays free, and its report arrives later as a message starting with [background report]. Aborting this call aborts the child.",
+	parameters: Type.Object({
+		task: Type.String({ description: "What the background worker should do, with file paths and acceptance checks" }),
+		model: Type.Optional(
+			Type.String({ description: "Configured provider/model, a bare Codex model ID, or inherit. Same defaults as subagent." }),
+		),
+	}),
+	execute: async (args, api, context) => {
+		const parent = await api.agent(context);
+		const selected = resolveChildModel(parent.model, args.model, (p, m) => api.models.getModel(p, m));
+		const owner = await api.commit(async (tx) => {
+			const owner = await tx.createTask(
+				BackgroundWork,
+				{ task: args.task, model: selected },
+				{ ownership: { kind: "conversation" }, background: true },
+			);
+			const child = await tx.createConversation({ ownership: { kind: "task", taskId: owner } });
+			await configure(tx, child.id, {
+				model: selected,
+				thinkingLevel: "medium",
+				tools: { remove: [subagent, background, btw] },
+			});
+			return owner;
+		}, context);
+		const owned = await api.commit(async (tx) => {
+			return (await tx.scanConversations({ ownerTaskId: owner }, 1)).items[0]?.id;
+		}, context);
+		if (owned !== undefined) await api.details({ conversationId: owned }, context);
+		return {
+			content: [{ type: "text" as const, text: "Background work started; its report will arrive as a message." }],
+		};
+	},
+});
+
+// ─── btw: a side question is just a task ────────────────────────────────────
+
+const SIDE_BOUNDARY =
+	"Side conversation boundary: inherited history is reference context only, not your current task. Answer only the question submitted after this boundary. Do not continue the parent's plans, tool calls, approvals or work. This is lightweight non-mutating exploration: do not edit files, execute shell commands, manage processes, publish, or delegate. Side answers are not appended to the parent conversation.";
+
+const btw = defineTool({
+	name: "btw",
+	description:
+		"Ask a side question with the parent history as reference context, without interrupting the main work. Returns the side answer; it is never appended to the parent. Side tools are read/search only.",
+	parameters: Type.Object({ question: Type.String({ description: "The side question to answer from parent history" }) }),
+	replay: "safe",
+	execute: async (args, api, context) => {
+		const parent: any = await api.conversation(api.conversationId, context);
+		const last = (await parent.entries({}, 1, undefined, context)).items[0];
+		if (last === undefined) throw new Error("Nothing to reference yet");
+		const agent = await parent.agent(context);
+		const side = await parent.fork(
+			last.id,
+			{
+				ownership: { kind: "ownerless" as const },
+				agent: {
+					model: agent.model,
+					thinkingLevel: agent.thinkingLevel,
+					cwd: agent.cwd,
+					tools: agent.tools.filter((t: { name: string }) => ["read", "web_search"].includes(t.name)),
+					instructions: `${agent.instructions ?? ""}\n\n${SIDE_BOUNDARY}`,
+				},
+			},
+			context,
+		);
+		await api.details({ conversationId: side.id }, context);
+		const result = await (
+			await side.submit({ type: "input", content: args.question, requestId: `btw:${api.taskId}` }, context)
+		).wait(context);
+		if (result.status !== "done" || result.type !== "input") {
+			throw new Error(`Side question did not answer: ${result.status}`);
+		}
+		const entry = await api.commit((tx) => tx.entry(result.answer), context);
+		return { content: [{ type: "text" as const, text: await answerText(entry) }] };
+	},
+});
+
+export function subagentsExtension() {
+	return defineExtension({ name: "skin", tools: [subagent, background, btw], tasks: [BackgroundWork] });
+}
+
+// ─── search: provider-native web search ─────────────────────────────────────
+// pi-web-search adapted to the model, auth and per-conversation identity APIs.
+// Static specifiers so bundlers trace the source-only package.
+
+const registerWebSearch = (await import("pi-web-search")).default as (pi: ExtensionAPI) => void;
+const { webSearch, WebSearchSchema } = (await import("pi-web-search/src/web_search.ts")) as {
+	WebSearchSchema: TSchema;
+	webSearch: (
+		id: string,
+		args: { query: string; urls?: string[] },
+		signal: AbortSignal,
+		update: AgentToolUpdateCallback | undefined,
+		context: ExtensionContext,
+		thinking?: ModelThinkingLevel,
+	) => Promise<AgentToolResult<Record<string, JsonValue>>>;
+};
+
+export const SearchUsage = defineDoc<{ callsWithUnknownUsage: number }>({
+	kind: "harness.search-usage",
+	version: 1,
+	scope: "conversation",
+	history: "latest",
+	fork: "initial",
+	initial: () => ({ callsWithUnknownUsage: 0 }),
+});
+const definitions: ToolDefinition[] = [];
+// Capture this package's native renderer; it is not an ambient Durable extension.
+registerWebSearch({
+	registerTool: (tool: ToolDefinition) => definitions.push(tool),
+	on() {},
+	getActiveTools: () => [],
+	setActiveTools() {},
+} as unknown as ExtensionAPI);
+export const searchRenderer: ToolRenderers = definitions.find((t) => t.name === "web_search")!;
+
+const webSearchTool = defineTool({
+		name: "web_search",
+		description: definitions[0].description,
+		parameters: WebSearchSchema,
+		execute: async (args, api, context) => {
+			const registry = new ModelRegistry(api.models as ModelRuntime);
+			const agent = await api.agent(context);
+			const model = agent.model && api.models.getModel(agent.model.provider, agent.model.modelId);
+			// Go completion routes have no native search, and its Messages gateway is unverified.
+			if ((model as { provider?: string; api?: string; id?: string } | undefined)?.provider === "opencode-go") {
+				const apiName = (model as { api?: string }).api;
+				if (apiName !== "openai-responses") {
+					return {
+						isError: true,
+						content: [
+							{
+								type: "text" as const,
+								text: `${(model as { id?: string }).id} does not have a verified provider-native search route through OpenCode Go. Select a Responses-backed Go model or a Codex model explicitly; no fallback was used.`,
+							},
+						],
+					};
+				}
+			}
+			const sessionId = await api.commit(
+				async (tx) => (await tx.doc(ProviderDoc, api.conversationId)).sessionId,
+				context,
+			);
+			// Record before dispatch so interruption cannot silently erase unknown usage.
+			await api.commit(async (tx) => {
+				(await tx.doc(SearchUsage, api.conversationId)).callsWithUnknownUsage++;
+			}, context);
+			const pluginContext = {
+				model,
+				modelRegistry: {
+					find: registry.find.bind(registry),
+					getAvailable: registry.getAvailable.bind(registry),
+					getApiKeyAndHeaders: async (candidate: Parameters<ModelRegistry["getApiKeyAndHeaders"]>[0]) => {
+						const auth = await registry.getApiKeyAndHeaders(candidate);
+						return auth.ok
+							? {
+									...auth,
+									headers:
+										auth.headers &&
+										Object.fromEntries(Object.entries(auth.headers).filter(([, value]) => value !== null)),
+								}
+							: auth;
+					},
+				},
+				sessionManager: { getSessionId: () => sessionId },
+			} as unknown as ExtensionContext;
+			let previous = "";
+			const result = await webSearch(
+				api.callId,
+				args as { query: string; urls?: string[] },
+				context.abortSignal ?? new AbortController().signal,
+				(update) => {
+					const text = update.content
+						.filter((p) => p.type === "text")
+						.map((p) => p.text)
+						.join("\n");
+					api.output(text.startsWith(previous) ? text.slice(previous.length) : "\n" + text);
+					previous = text;
+				},
+				pluginContext,
+				agent.thinkingLevel,
+			);
+			const normalized = JSON.parse(JSON.stringify(result)) as typeof result;
+			if (normalized.details?.error) return { ...normalized, isError: true };
+			// The plugin does not report search-request usage. Do not present it as zero.
+			return normalized;
+		},
+	});
+export const Search = defineExtension({ name: "skin-search", tools: [webSearchTool] });
+
+// ─── mcp: lazy codemode bridge ──────────────────────────────────────────────
+// MCP servers connect on first use, never at startup: nothing connects during
+// --check, and a dead server cannot break startup. The process never changes
+// directory, so the launch directory stays correct for server commands.
+
+export type ServerConfig = {
+	command?: string;
+	args?: string[];
+	url?: string;
+	headers?: Record<string, string>;
+	enabled?: boolean;
+	cwd?: string;
+};
+export type McpConfig = Record<string, ServerConfig>;
+const expand = (s: string) => s.replace(/^~(?=\/|$)/, homedir());
+
+export function loadMcp(cwd: string): McpConfig {
+	const load = (file: string) => (existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).mcpServers ?? {}) : {});
+	return { ...load(join(homedir(), ".pi/agent/mcp.json")), ...load(join(cwd, ".pi/mcp.json")) };
+}
+
+export function listMcpServers(cwd: string): string[] {
+	return Object.entries(loadMcp(cwd))
+		.filter(([, config]) => config.enabled !== false)
+		.map(([name]) => name);
+}
+
+type McpBridge = Awaited<ReturnType<typeof connectMcp>>;
+const bridges = new Map<string, Promise<McpBridge>>();
+function mcpBridge(cwd: string): Promise<McpBridge> {
+	let bridge = bridges.get(cwd);
+	if (bridge === undefined) {
+		bridge = connectMcp(cwd, loadMcp(cwd));
+		bridges.set(cwd, bridge);
+		// A failed first connection must not poison later calls.
+		void bridge.catch(() => {
+			if (bridges.get(cwd) === bridge) bridges.delete(cwd);
+		});
+	}
+	return bridge;
+}
+
+async function connectMcp(cwd: string, configs: McpConfig) {
+	const clients: McpClient[] = [];
+	const tools: { name: string; description: string; inputSchema: any; client: McpClient; original: string }[] = [];
+	const status: Record<string, string> = {};
+	await Promise.all(
+		Object.entries(configs).map(async ([name, config]) => {
+			if (config.enabled === false) return;
+			const client = new McpClient({
+				name: "pi-harness",
+				version: "0.1.0",
+				roots: [{ uri: pathToFileURL(cwd).href }],
+			});
+			clients.push(client);
+			try {
+				const transport = config.url
+					? new StreamableHttpTransport({ url: config.url, headers: config.headers })
+					: new StdioTransport({
+							command: expand(config.command!),
+							args: config.args?.map(expand),
+							cwd: config.cwd ? expand(config.cwd) : cwd,
+						});
+				await client.connect(transport);
+				const listed = await client.listTools();
+				for (const tool of listed)
+					tools.push({
+						name: `${name}_${tool.name}`.replace(/[^\w]/g, "_"),
+						description: tool.description ?? tool.name,
+						inputSchema: tool.inputSchema,
+						client,
+						original: tool.name,
+					});
+				status[name] = `${listed.length} tools`;
+			} catch (error) {
+				status[name] = `unavailable: ${error instanceof Error ? error.message : String(error)}`;
+				await client.close().catch(() => {});
+			}
+		}),
+	);
+	return {
+		status,
+		tools,
+		close: () => Promise.all(clients.map((c) => c.close().catch(() => {}))),
+	};
+}
+
+async function runCodemode(
+	code: string,
+	live: {
+		name: string;
+		description: string;
+		inputSchema: unknown;
+		call: (args: any, signal: any) => Promise<any>;
+	}[],
+	api: { commit: any },
+	context: Context,
+) {
+	const sandbox = new CodemodeSandbox({
+		timeoutMs: 60_000,
+		globals: [
+			{
+				name: "searchTools",
+				execute: async (query) =>
+					live
+						.filter((t) => `${t.name} ${t.description}`.toLowerCase().includes(String(query).toLowerCase()))
+						.map((t) => ({ name: t.name, description: t.description })),
+			},
+			{
+				name: "describeTool",
+				execute: async (name) => {
+					const tool = live.find((t) => t.name === name);
+					if (!tool) throw new Error("Unknown MCP tool");
+					return { name: tool.name, description: tool.description, inputSchema: tool.inputSchema };
+				},
+			},
+		],
+		tools: live.map((tool) => ({
+			name: tool.name,
+			description: tool.description,
+			execute: async (args, { signal }: { signal?: AbortSignal }) => tool.call(args, signal),
+		})),
+	});
+	try {
+		const result = await sandbox.execute(code, { signal: context.abortSignal });
+		if (!result.ok) throw new Error(result.error.message);
+		const content = [...result.output];
+		if (result.value !== undefined) content.push({ type: "text", text: JSON.stringify(result.value) });
+		return { content };
+	} finally {
+		await sandbox.close();
+	}
+}
+
+export function mcpExtension(cwd: string) {
+	return defineExtension({
+		name: "skin-mcp",
+		tools: [
+			defineTool({
+				name: "codemode",
+				description:
+					"Execute JavaScript in a sandbox to call MCP tools. No filesystem, network or process APIs in scripts. Use searchTools(\"keyword\") to discover tool names/descriptions and describeTool(\"name\") for input schemas, then await tools.name(args). Use text(value) or return for output. MCP calls execute with the host's authority.",
+				parameters: Type.Object({ code: Type.String() }),
+				execute: async ({ code }, api, context) => {
+					const connected = await mcpBridge(cwd);
+					return runCodemode(
+						code,
+						connected.tools.map((tool) => ({
+							name: tool.name,
+							description: tool.description,
+							inputSchema: tool.inputSchema,
+							call: async (args: any, signal: any) => {
+								await api.commit(async (tx) => {
+									await tx.appendEntry(api.conversationId, {
+										kind: "harness.mcp",
+										data: { tool: tool.name, status: "started" },
+									});
+								}, context);
+								const result = await tool.client.callTool(tool.original, args, { signal });
+								await api.commit(async (tx) => {
+									await tx.appendEntry(api.conversationId, {
+										kind: "harness.mcp",
+										data: { tool: tool.name, status: result.isError ? "error" : "completed" },
+									});
+								}, context);
+								if (result.isError) throw new Error(JSON.stringify(result.content));
+								return result.structuredContent ?? result.content;
+							},
+						})),
+						api,
+						context,
+					);
+				},
+			}),
+		],
+	});
+}
