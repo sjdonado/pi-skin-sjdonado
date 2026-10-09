@@ -188,6 +188,14 @@ export function buildSlashCommands(
 		{ name: "quit", description: "Exit the session" },
 		{ name: "mcp", description: "Configure MCP servers in pi" },
 		{ name: "settings", description: "Change settings in pi" },
+		{ name: "thinking", description: "Select thinking level", argumentHint: "[level]" },
+		{ name: "new", description: "Start a fresh session" },
+		{ name: "debug", description: "Write a debug log" },
+		{ name: "changelog", description: "Show what is new" },
+		{ name: "hotkeys", description: "Show keyboard shortcuts" },
+		{ name: "export", description: "Export transcript to JSONL", argumentHint: "[path]" },
+		{ name: "import", description: "Import a transcript JSONL file", argumentHint: "<path>" },
+		{ name: "share", description: "Share transcript as a secret gist" },
 		...skills.map((skill) => ({ name: `skill:${skill.name}`, description: skill.description, argumentHint: "[task]" })),
 	];
 }

@@ -83,7 +83,7 @@ while (true) {
 			}
 			break;
 		}
-		selected = next;
+		selected = next.sessionId;
 		resume = false;
 	} finally {
 		const checkSession = options.check ? durable.view.current().session.directory : undefined;

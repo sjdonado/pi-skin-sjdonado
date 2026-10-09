@@ -77,6 +77,10 @@ export interface DurableController {
 	toggleTasks(): Promise<void>;
 	/** Re-read skills and prompt resources from disk. */
 	reload(): Promise<void>;
+	/** Set the thinking level, if the model supports it. */
+	setThinking(level: ModelThinkingLevel): Promise<void>;
+	/** Import transcript entries from one of our JSONL exports. */
+	importTranscript(path: string): Promise<void>;
 	/** Show and talk to another conversation. */
 	switchConversation(id: ConversationId): Promise<void>;
 }
@@ -326,6 +330,42 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 				command(async () => {
 					clearSkinCaches();
 					notice("info", "Reloaded skills and prompt resources.");
+				}),
+			setThinking: (level) =>
+				command(async () => {
+					const model = agentModel();
+					if (!model.reasoning) throw new Error("Current model does not support thinking");
+					if (!getSupportedThinkingLevels(model).includes(level)) {
+						throw new Error(`Thinking ${level} is not supported by this model`);
+					}
+					await current.configure({ thinkingLevel: level }, context);
+				}),
+			importTranscript: (path) =>
+				command(async () => {
+					const { readFile } = await import("node:fs/promises");
+					let parsed: unknown;
+					try {
+						parsed = (await readFile(path, "utf8"))
+							.split("\n")
+							.filter((line) => line.trim())
+							.map((line) => JSON.parse(line));
+					} catch (error) {
+						throw new Error(`Cannot import ${path}: ${error instanceof Error ? error.message : String(error)}`);
+					}
+					if (!Array.isArray(parsed)) throw new Error(`Cannot import ${path}: expected one JSON object per line`);
+					await opened.commit(async (tx) => {
+						for (const entry of parsed as { kind?: unknown; model?: unknown; data?: unknown }[]) {
+							if (typeof entry !== "object" || entry === null || typeof entry.kind !== "string") {
+								throw new Error(`Cannot import ${path}: bad entry`);
+							}
+							await tx.appendEntry(current.id, {
+								kind: entry.kind,
+								...(entry.model === undefined ? {} : { model: entry.model as never }),
+								...(entry.data === undefined ? {} : { data: entry.data as never }),
+							});
+						}
+					}, context);
+					notice("info", `Imported ${(parsed as unknown[]).length} entries.`);
 				}),
 		};
 
