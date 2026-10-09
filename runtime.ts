@@ -9,6 +9,7 @@ import {
 	type Cursor,
 	type EntryRecord,
 	Harness,
+	type LiveState,
 	type ModelRef,
 	ROOT_CONVERSATION_ID,
 	type Submission,
@@ -25,7 +26,7 @@ import {
 	findInitialAgentModel,
 } from "./harness-setup.ts";
 import { selectSession } from "./sessions.ts";
-import { clearSkinCaches } from "./skin.ts";
+import { clearSkinCaches, herdrAgentClose, herdrAgentOpen, herdrAgentState } from "./skin.ts";
 import { Processes, type Job } from "./processes.ts";
 import { join } from "node:path";
 
@@ -200,9 +201,25 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 		};
 		const listeners = new Set<() => void>();
 		let notifying = false;
+		let herdrState: "working" | "idle" = "idle";
+		// Herdr status follows the live turn: report working/idle transitions only.
+		const reportHerdr = (): void => {
+			const live = (state.conversation.docs["pi.live"] ?? {}) as LiveState;
+			const working =
+				live.run !== undefined ||
+				live.generation !== undefined ||
+				(live.compactions ?? []).some((status) => status.blocking) ||
+				(live.tools ?? []).some((slot) => slot.status === "running");
+			const next = working ? "working" : "idle";
+			if (next !== herdrState) {
+				herdrState = next;
+				herdrAgentState(location.id, next);
+			}
+		};
 		// Commit listeners and Chord frames call this on the Session line; rendering runs afterwards, once per burst.
 		const update = (patch: Partial<DurableView>): void => {
 			state = { ...state, ...patch };
+			reportHerdr();
 			if (notifying) return;
 			notifying = true;
 			setImmediate(() => {
@@ -415,6 +432,8 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 		await controller.toggleTasks();
 		// Recovered work from an interrupted turn continues now.
 		harness.resume();
+		herdrAgentOpen(location.id);
+		reportHerdr();
 
 		let closing: Promise<void> | undefined;
 		return {
@@ -439,6 +458,7 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 						await processes.close();
 						await envs.cleanup(context);
 					} finally {
+						herdrAgentClose(location.id);
 						await location.release();
 					}
 				})();
