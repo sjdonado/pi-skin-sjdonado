@@ -34,6 +34,7 @@ import { readToolSystemPromptContribution } from "./node_modules/@earendil-works
 import { writeToolSystemPromptContribution } from "./node_modules/@earendil-works/pi-coding-agent/dist/core/tools/write.js";
 import { McpClient, StdioTransport, StreamableHttpTransport } from "@earendil-works/pi-mcp";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -613,4 +614,103 @@ export function mcpExtension(cwd: string) {
 			}),
 		],
 	});
+}
+
+// ─── herdr: report this pane as a custom agent ─────────────────────────────
+// Herdr's pi integration is an upstream-pi extension PSS never loads, so PSS
+// reports itself through Herdr's documented custom-agent CLI. Gated on
+// Herdr's own pane env; outside Herdr every call is a no-op. Reporting is
+// best-effort: a dead socket must never break the session.
+
+const HERDR_SOURCE = "custom:pss";
+// CLI contract against herdr 0.9.3 (`pane report-agent` / `release-agent`).
+
+function herdrPane(): { bin: string; pane: string } | undefined {
+	if (process.env.HERDR_ENV !== "1") return undefined;
+	const pane = process.env.HERDR_PANE_ID;
+	if (!pane) return undefined;
+	return { bin: process.env.HERDR_BIN_PATH ?? "herdr", pane };
+}
+
+function herdrCall(args: string[]): void {
+	const target = herdrPane();
+	if (target === undefined) return;
+	try {
+		// Fire-and-forget: transitions ride the synchronous update() path and must never stall it.
+		const child = spawn(target.bin, args, { stdio: "ignore", detached: true });
+		child.on("error", () => {});
+		child.unref();
+	} catch {
+		// Best-effort; ignore.
+	}
+}
+
+/** Synchronous variant for the exit path, where delivery must precede process end. */
+function herdrCallSync(args: string[]): void {
+	const target = herdrPane();
+	if (target === undefined) return;
+	try {
+		spawnSync(target.bin, args, { stdio: "ignore", timeout: 5_000 });
+	} catch {
+		// Best-effort; ignore.
+	}
+}
+
+/** The session holding the pane; guards stale callers when sessions overlap in one process. */
+let herdrSession: string | undefined;
+
+/** Hold the pane as agent `pss`, idle, with the resume command Herdr restores after restart. */
+export function herdrAgentOpen(sessionId: string): void {
+	const target = herdrPane();
+	if (target === undefined) return;
+	herdrSession = sessionId;
+	herdrCall([
+		"pane",
+		"report-agent",
+		target.pane,
+		"--source",
+		HERDR_SOURCE,
+		"--agent",
+		"pss",
+		"--state",
+		"idle",
+		"--agent-session-id",
+		sessionId,
+		"--",
+		"pss",
+		"--session",
+		sessionId,
+	]);
+}
+
+/** Release the pane, but only when this session still holds it. */
+export function herdrAgentClose(sessionId: string): void {
+	if (herdrSession !== sessionId) return;
+	herdrSession = undefined;
+	const target = herdrPane();
+	if (target === undefined) return;
+	herdrCallSync(["pane", "release-agent", target.pane, "--source", HERDR_SOURCE, "--agent", "pss"]);
+}
+
+/** Report a working/idle transition, with the session and resume argv attached. */
+export function herdrAgentState(sessionId: string, state: "working" | "idle"): void {
+	const target = herdrPane();
+	if (target === undefined || herdrSession !== sessionId) return;
+	herdrCall([
+		"pane",
+		"report-agent",
+		target.pane,
+		"--source",
+		HERDR_SOURCE,
+		"--agent",
+		"pss",
+		"--state",
+		state,
+		"--agent-session-id",
+		sessionId,
+		"--",
+		"pss",
+		"--session",
+		sessionId,
+	]);
 }
