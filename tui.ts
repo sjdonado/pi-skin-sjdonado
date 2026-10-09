@@ -46,7 +46,9 @@ import { getEditorTheme, getMarkdownTheme, initTheme, theme } from "./node_modul
 import { InteractiveThemeController } from "./node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme-controller.js";
 import { agentOf, type DurableController, type DurableView, type DurableViewSource } from "./runtime.ts";
 import { buildSlashCommands, listSkills } from "./skin.ts";
+import { listSessions, sessionName, setSessionName } from "./sessions.ts";
 import { homedir } from "node:os";
+import { copyToClipboard } from "./node_modules/@earendil-works/pi-coding-agent/dist/utils/clipboard.js";
 import { CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
 
 const SELECT_THEME: SelectListTheme = {
@@ -414,7 +416,7 @@ class DurableTui {
 		this.#footerHints.setText(
 			`${theme.fg(label === "main" ? "dim" : "accent", label)}${theme.fg(
 				"dim",
-				` · ${model} · thinking:${agent.thinkingLevel ?? "off"} (${keyText("app.thinking.cycle")}) · ${keyText("app.model.select")} or /model · ${keyText("app.message.followUp")} follow-up · ${keyText("app.clear")} exit`,
+				` · ${model} · thinking:${agent.thinkingLevel ?? "off"} (${keyText("app.thinking.cycle")}) · ${keyText("app.message.followUp")} follow-up`,
 			)}`,
 		);
 	}
@@ -580,14 +582,19 @@ export async function runDurableTui(
 	source: DurableViewSource,
 	controller: DurableController,
 	settings: SettingsManager,
-): Promise<void> {
+): Promise<string | undefined> {
 	setCapabilityOverrides(settings.getTerminalCapabilityOverrides());
 	// The system theme until the controller resolves the user's theme against the terminal's colors.
 	initTheme();
+	let nextSession: string | undefined;
 	let exit = (): void => {};
 	const exited = new Promise<void>((resolve) => {
 		exit = resolve;
 	});
+	const exitToSession = (id: string): void => {
+		nextSession = id;
+		exit();
+	};
 	let view!: DurableTui;
 
 	const selectModel = (): void => {
@@ -634,6 +641,73 @@ export async function runDurableTui(
 		view.mount(selector);
 	};
 
+	const copyLastAnswer = (): void => {
+		const entries = source.current().conversation.entries;
+		for (const entry of [...entries].reverse()) {
+			const message = entry.model?.[0];
+			if (entry.kind !== "pi.assistant" || message?.role !== "assistant") continue;
+			const text = message.content
+				.filter((block) => block.type === "text")
+				.map((block) => block.text)
+				.join("\n");
+			if (!text) continue;
+			void copyToClipboard(text).then(
+				() => view.ui.flash("Copied!"),
+				(error) => console.error(`Copy failed: ${error instanceof Error ? error.message : String(error)}`),
+			);
+			return;
+		}
+		view.ui.flash("Nothing to copy yet.");
+	};
+
+	const showSession = (): void => {
+		void (async () => {
+			const snapshot = source.current();
+			const agent = agentOf(snapshot.conversation);
+			const name = await sessionName(snapshot.session.directory);
+			const rows: [string, string][] = [
+				["session", snapshot.session.id],
+				["name", name ?? "(unnamed; /name <name> sets one)"],
+				["cwd", snapshot.session.cwd],
+				["model", agent.model === undefined ? "no model" : `${agent.model.provider}/${agent.model.modelId}`],
+				["thinking", agent.thinkingLevel ?? "off"],
+				["conversations", String(snapshot.conversations.length)],
+			];
+			const selector = new ListSelector(
+				"Session:",
+				rows.map(([label, description]) => ({ value: label, label, description })),
+				() => view.restoreEditor(),
+				() => view.restoreEditor(),
+			);
+			view.mount(selector);
+		})().catch((error) => console.error(error instanceof Error ? error.message : String(error)));
+	};
+
+	const selectSession = (): void => {
+		void (async () => {
+			const snapshot = source.current();
+			const sessions = await listSessions(snapshot.session.cwd);
+			if (sessions.length === 0) {
+				view.ui.flash("No saved sessions.");
+				return;
+			}
+			const selector = new ListSelector(
+				"Resume:",
+				sessions.map((session) => ({
+					value: session.id,
+					label: session.name ?? session.id,
+					description: `${session.id === snapshot.session.id ? "(current) " : ""}${new Date(Number(session.id.split("-")[0])).toLocaleString()}`,
+				})),
+				(value) => {
+					view.restoreEditor();
+					if (value !== snapshot.session.id) exitToSession(value);
+				},
+				() => view.restoreEditor(),
+			);
+			view.mount(selector);
+		})().catch((error) => console.error(error instanceof Error ? error.message : String(error)));
+	};
+
 	view = new DurableTui(source.current().session.cwd, {
 		submit: (text) => {
 			const trimmed = text.trim();
@@ -644,6 +718,32 @@ export async function runDurableTui(
 			if (trimmed === "/compact" || trimmed.startsWith("/compact ")) {
 				const instructions = trimmed.slice("/compact".length).trim();
 				return void controller.compact(instructions || undefined);
+			}
+			if (trimmed === "/copy") return copyLastAnswer();
+			if (trimmed === "/session") return showSession();
+			if (trimmed === "/name" || trimmed.startsWith("/name ")) {
+				const name = trimmed.slice("/name".length).trim();
+				if (!name) {
+					view.ui.flash("Usage: /name <name>");
+					return;
+				}
+				const directory = source.current().session.directory;
+				void setSessionName(directory, name).then(
+					() => view.ui.flash(`Session name set: ${name}`),
+					(error) => console.error(error instanceof Error ? error.message : String(error)),
+				);
+				return;
+			}
+			if (trimmed === "/resume") return selectSession();
+			if (trimmed === "/reload") return void controller.reload();
+			if (trimmed === "/quit") return exit();
+			if (trimmed === "/mcp") {
+				view.ui.flash("Go run pi to configure MCP servers.");
+				return;
+			}
+			if (trimmed === "/settings") {
+				view.ui.flash("Go to pi and run /settings.");
+				return;
 			}
 			void controller.submit(trimmed, "steer");
 		},
@@ -673,4 +773,5 @@ export async function runDurableTui(
 	unsubscribe();
 	themes.dispose();
 	view.stop();
+	return nextSession;
 }

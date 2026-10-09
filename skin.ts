@@ -36,7 +36,7 @@ import { readToolSystemPromptContribution } from "./node_modules/@earendil-works
 import { writeToolSystemPromptContribution } from "./node_modules/@earendil-works/pi-coding-agent/dist/core/tools/write.js";
 import { McpClient, StdioTransport, StreamableHttpTransport } from "@earendil-works/pi-mcp";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -55,19 +55,66 @@ const CONTRIBUTIONS = {
 /** pi's section order; `buildSystemPromptSections()` omits the ones without content. */
 const KEYS = ["preamble", "tools", "rules", "docs", "project_context", "skills", "cwd"] as const;
 
-export function createSkinPrompt(settings: SettingsManager, fallbackCwd: string) {
-	const resources = new Map<string, { contextFiles: { path: string; content: string }[]; skills: Skill[] }>();
-	const load = (cwd: string) => {
-		let found = resources.get(cwd);
-		if (found === undefined) {
-			const agentDir = getAgentDir();
-			found = {
-				contextFiles: loadProjectContextFiles({ cwd, agentDir }),
-				skills: loadSkills({ cwd, agentDir, skillPaths: settings.getSkillPaths(), includeDefaults: true }).skills,
-			};
-			resources.set(cwd, found);
+// Skill discovery mirrors pi's effective set: project `.agents/skills` up to
+// the repo root, the shared `~/.agents/skills`, pi defaults, installed
+// extension skills, and configured paths. One cache serves the prompt and
+// the completion list so the model and the popup agree.
+const skinSkillCache = new Map<string, Skill[]>();
+function extensionSkillDirs(): string[] {
+	const dirs: string[] = [];
+	try {
+		const root = join(homedir(), ".pi/agent/npm/node_modules");
+		for (const entry of readdirSync(root, { withFileTypes: true })) {
+			if (!entry.isDirectory()) continue;
+			try {
+				const manifest = JSON.parse(readFileSync(join(root, entry.name, "package.json"), "utf8"));
+				for (const declared of manifest.pi?.skills ?? []) dirs.push(join(root, entry.name, declared));
+			} catch {
+				// A broken package must never break skill discovery.
+			}
 		}
-		return found;
+	} catch {
+		// No local package store; skip extension skills.
+	}
+	return dirs.filter((dir) => existsSync(dir));
+}
+export function loadSkinSkills(settings: SettingsManager, cwd: string): Skill[] {
+	let found = skinSkillCache.get(cwd);
+	if (found === undefined) {
+		const agentDir = getAgentDir();
+	 const walk: string[] = [];
+		for (let dir = cwd; ; dir = dirname(dir)) {
+			const path = join(dir, ".agents/skills");
+			if (existsSync(path)) walk.push(path);
+			if (existsSync(join(dir, ".git")) || dirname(dir) === dir || dir === homedir()) break;
+		}
+		const homeShared = join(homedir(), ".agents/skills");
+		found = loadSkills({
+			cwd,
+			agentDir,
+			skillPaths: [
+				...walk,
+				...(existsSync(homeShared) ? [homeShared] : []),
+				...extensionSkillDirs(),
+				...settings.getSkillPaths(),
+			],
+			includeDefaults: true,
+		}).skills;
+		skinSkillCache.set(cwd, found);
+	}
+	return found;
+}
+
+const skinPromptCache = new Map<string, { contextFiles: { path: string; content: string }[] }>();
+
+export function createSkinPrompt(settings: SettingsManager, fallbackCwd: string) {
+	const load = (cwd: string) => {
+		let found = skinPromptCache.get(cwd);
+		if (found === undefined) {
+			found = { contextFiles: loadProjectContextFiles({ cwd, agentDir: getAgentDir() }) };
+			skinPromptCache.set(cwd, found);
+		}
+		return { ...found, skills: loadSkinSkills(settings, cwd) };
 	};
 	const built = new WeakMap<PromptInput, Record<string, string>>();
 	const build = (input: PromptInput): Record<string, string> => {
@@ -111,14 +158,14 @@ export function createSkinPrompt(settings: SettingsManager, fallbackCwd: string)
 // The sample TUI has no completion; this feeds the editor the same slash
 // commands plus the discovered skills, with live model names for /model.
 
-const skillLists = new Map<string, Skill[]>();
 export function listSkills(settings: SettingsManager, cwd: string): Skill[] {
-	let found = skillLists.get(cwd);
-	if (found === undefined) {
-		found = loadSkills({ cwd, agentDir: getAgentDir(), skillPaths: settings.getSkillPaths(), includeDefaults: true }).skills;
-		skillLists.set(cwd, found);
-	}
-	return found;
+	return loadSkinSkills(settings, cwd);
+}
+
+/** Drop cached skills and prompt resources so `/reload` picks up disk changes. */
+export function clearSkinCaches(): void {
+	skinSkillCache.clear();
+	skinPromptCache.clear();
 }
 
 export function buildSlashCommands(
@@ -133,6 +180,14 @@ export function buildSlashCommands(
 		{ name: "tasks", description: "Show or hide the task panel" },
 		{ name: "agents", description: "Switch conversations" },
 		{ name: "compact", description: "Compact this conversation", argumentHint: "[instructions]" },
+		{ name: "copy", description: "Copy the last assistant message" },
+		{ name: "name", description: "Name this session", argumentHint: "<name>" },
+		{ name: "session", description: "Show session info" },
+		{ name: "resume", description: "Resume a saved session" },
+		{ name: "reload", description: "Reload skills and prompt resources" },
+		{ name: "quit", description: "Exit the session" },
+		{ name: "mcp", description: "Configure MCP servers in pi" },
+		{ name: "settings", description: "Change settings in pi" },
 		...skills.map((skill) => ({ name: `skill:${skill.name}`, description: skill.description, argumentHint: "[task]" })),
 	];
 }

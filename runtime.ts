@@ -25,6 +25,7 @@ import {
 	findInitialAgentModel,
 } from "./harness-setup.ts";
 import { selectSession } from "./sessions.ts";
+import { clearSkinCaches } from "./skin.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -74,6 +75,8 @@ export interface DurableController {
 	cycleThinking(): Promise<void>;
 	setModel(model: ModelRef): Promise<void>;
 	toggleTasks(): Promise<void>;
+	/** Re-read skills and prompt resources from disk. */
+	reload(): Promise<void>;
 	/** Show and talk to another conversation. */
 	switchConversation(id: ConversationId): Promise<void>;
 }
@@ -81,6 +84,7 @@ export interface DurableController {
 export interface OpenDurableOptions {
 	readonly cwd?: string;
 	readonly continueSession?: boolean;
+	readonly sessionId?: string;
 }
 
 export interface OpenDurableResult {
@@ -122,7 +126,7 @@ function titleOf(entry: EntryRecord | undefined): { title?: string } {
 }
 
 export async function openDurable(options: OpenDurableOptions = {}): Promise<OpenDurableResult> {
-	const location = await selectSession(options.cwd ?? process.cwd(), options.continueSession ?? false);
+	const location = await selectSession(options.cwd ?? process.cwd(), options.continueSession ?? false, options.sessionId);
 	let harness: Harness | undefined;
 	try {
 		const modelRuntime = await ModelRuntime.create();
@@ -317,6 +321,11 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 					current = next;
 					conversation = nextState;
 					unsubscribe = nextState.subscribe((value) => update({ conversation: value }));
+				}),
+			reload: () =>
+				command(async () => {
+					clearSkinCaches();
+					notice("info", "Reloaded skills and prompt resources.");
 				}),
 		};
 
