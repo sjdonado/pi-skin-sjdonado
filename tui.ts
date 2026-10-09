@@ -1,4 +1,4 @@
-import type { AssistantMessage, ToolResultMessage, Usage, UserMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ModelThinkingLevel, ToolResultMessage, Usage, UserMessage } from "@earendil-works/pi-ai";
 import type {
 	ConversationId,
 	EntryRecord,
@@ -48,7 +48,12 @@ import { agentOf, type DurableController, type DurableView, type DurableViewSour
 import { buildSlashCommands, listSkills } from "./skin.ts";
 import { listSessions, sessionName, setSessionName } from "./sessions.ts";
 import { homedir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { copyToClipboard } from "./node_modules/@earendil-works/pi-coding-agent/dist/utils/clipboard.js";
+
+const repoRoot = (): string => dirname(fileURLToPath(import.meta.url));
 import { CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
 
 const SELECT_THEME: SelectListTheme = {
@@ -582,17 +587,21 @@ export async function runDurableTui(
 	source: DurableViewSource,
 	controller: DurableController,
 	settings: SettingsManager,
-): Promise<string | undefined> {
+): Promise<{ sessionId?: string } | undefined> {
 	setCapabilityOverrides(settings.getTerminalCapabilityOverrides());
 	// The system theme until the controller resolves the user's theme against the terminal's colors.
 	initTheme();
-	let nextSession: string | undefined;
+	let nextSession: { sessionId?: string } | undefined;
 	let exit = (): void => {};
 	const exited = new Promise<void>((resolve) => {
 		exit = resolve;
 	});
 	const exitToSession = (id: string): void => {
-		nextSession = id;
+		nextSession = { sessionId: id };
+		exit();
+	};
+	const exitFresh = (): void => {
+		nextSession = {};
 		exit();
 	};
 	let view!: DurableTui;
@@ -708,6 +717,27 @@ export async function runDurableTui(
 		})().catch((error) => console.error(error instanceof Error ? error.message : String(error)));
 	};
 
+	const showText = (title: string, body: string): void => {
+		const content = new Container();
+		content.addChild(new DynamicBorder());
+		content.addChild(new Spacer(1));
+		content.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
+		content.addChild(new Spacer(1));
+		content.addChild(new Markdown(body, 1, 0, getMarkdownTheme()));
+		content.addChild(new Spacer(1));
+		content.addChild(new DynamicBorder());
+		const selector = new ListSelector(
+			"",
+			[{ value: "close", label: "Close" }],
+			() => view.restoreEditor(),
+			() => view.restoreEditor(),
+		);
+		content.addChild(selector);
+		view.mount(content);
+		view.ui.setFocus(selector);
+		view.ui.requestRender();
+	};
+
 	view = new DurableTui(source.current().session.cwd, {
 		submit: (text) => {
 			const trimmed = text.trim();
@@ -715,6 +745,39 @@ export async function runDurableTui(
 			if (trimmed === "/model") return selectModel();
 			if (trimmed === "/tasks") return void controller.toggleTasks();
 			if (trimmed === "/agents") return selectConversation();
+			if (trimmed === "/ps") {
+				void (async () => {
+					const jobs = await controller.listTerminals();
+					if (jobs.length === 0) {
+						view.ui.flash("No background terminals.");
+						return;
+					}
+					const selector = new ListSelector(
+						"Background terminals:",
+						jobs.map((job) => ({
+							value: job.id,
+							label: `${job.name} · ${job.status}`,
+							description: job.command.slice(0, 80),
+						})),
+						(value) => {
+							view.restoreEditor();
+							controller
+								.terminalLogs(value)
+								.then((logs) => showText("Terminal output:", logs.slice(-4000) || "(no output yet)"))
+								.catch((error) => console.error(error instanceof Error ? error.message : String(error)));
+						},
+						() => view.restoreEditor(),
+					);
+					view.mount(selector);
+				})().catch((error) => console.error(error instanceof Error ? error.message : String(error)));
+				return;
+			}
+			if (trimmed === "/stop") {
+				void controller
+					.stopTerminals()
+					.catch((error) => console.error(error instanceof Error ? error.message : String(error)));
+				return;
+			}
 			if (trimmed === "/compact" || trimmed.startsWith("/compact ")) {
 				const instructions = trimmed.slice("/compact".length).trim();
 				return void controller.compact(instructions || undefined);
@@ -736,7 +799,111 @@ export async function runDurableTui(
 			}
 			if (trimmed === "/resume") return selectSession();
 			if (trimmed === "/reload") return void controller.reload();
+			if (trimmed === "/thinking" || trimmed.startsWith("/thinking ")) {
+				const level = trimmed.slice("/thinking".length).trim();
+				if (!level) {
+					const selector = new ListSelector(
+						"Thinking level:",
+						["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((value) => ({ value, label: value })),
+						(value) => {
+							view.restoreEditor();
+							void controller.setThinking(value as ModelThinkingLevel);
+						},
+						() => view.restoreEditor(),
+					);
+					view.mount(selector);
+					return;
+				}
+				return void controller.setThinking(level as ModelThinkingLevel);
+			}
 			if (trimmed === "/quit") return exit();
+			if (trimmed === "/debug") {
+				const snapshot = source.current();
+				const lines = [
+					`cwd: ${snapshot.session.cwd}`,
+					`session: ${snapshot.session.id}`,
+					`conversations: ${snapshot.conversations.length}`,
+					`models: ${snapshot.models.length}`,
+					`notices: ${snapshot.notices.length}`,
+				];
+				showText("Debug:", lines.join("\n"));
+				return;
+			}
+			if (trimmed === "/changelog") {
+				const path = join(repoRoot(), "node_modules/@earendil-works/pi-coding-agent/CHANGELOG.md");
+				void readFile(path, "utf8").then(
+					(text) => showText("What's new:", text.split("\n").slice(0, 60).join("\n")),
+					(error) => console.error(error instanceof Error ? error.message : String(error)),
+				);
+				return;
+			}
+			if (trimmed === "/hotkeys") {
+				const keys = getKeybindings();
+				const key = (action: Parameters<typeof keys.getKeys>[0]): string =>
+					keys.getKeys(action).join(", ") || "unbound";
+				const rows: [string, string][] = [
+					["submit", key("tui.input.submit")],
+					["new line", key("tui.input.newLine")],
+					["follow-up", key("app.message.followUp")],
+					["select model", key("app.model.select")],
+					["cycle thinking", key("app.thinking.cycle")],
+					["expand tools", key("app.tools.expand")],
+					["abort / exit", "esc, ctrl+c"],
+					["up / down", key("tui.select.up")],
+					["confirm", key("tui.select.confirm")],
+				];
+				showText(
+					"Hotkeys:",
+					rows.map(([label, keys]) => `- ${label}: ${keys}`).join("\n"),
+				);
+				return;
+			}
+			if (trimmed === "/export" || trimmed.startsWith("/export ")) {
+				const path = trimmed.slice("/export".length).trim() || undefined;
+				void (async () => {
+					const snapshot = source.current();
+					const out =
+						path ?? join(snapshot.session.cwd, `pss-${snapshot.session.id}.jsonl`);
+					await writeFile(out, `${snapshot.conversation.entries.map((e) => JSON.stringify(e)).join("\n")}\n`);
+					showText("Exported:", out);
+				})().catch((error) => console.error(error instanceof Error ? error.message : String(error)));
+				return;
+			}
+			if (trimmed === "/import" || trimmed.startsWith("/import ")) {
+				const path = trimmed.slice("/import".length).trim();
+				if (!path) {
+					view.ui.flash("Usage: /import <path.jsonl>");
+					return;
+				}
+				void controller.importTranscript(path);
+				return;
+			}
+			if (trimmed === "/share") {
+				void (async () => {
+					const snapshot = source.current();
+					const body = snapshot.conversation.entries
+						.map((entry) => {
+							const message = entry.model?.[0];
+							if (message === undefined) return null;
+							if (message.role === "user")
+								return `**user:** ${typeof message.content === "string" ? message.content : message.content.filter((c) => c.type === "text").map((c) => c.text).join("\n")}`;
+							if (message.role === "assistant")
+								return `**assistant:** ${message.content.filter((c) => c.type === "text").map((c) => c.text).join("\n")}`;
+							return null;
+						})
+						.filter((line) => line !== null)
+						.join("\n\n");
+					const { spawnSync } = await import("node:child_process");
+					const file = join(snapshot.session.directory, "share.md");
+					await writeFile(file, body);
+					// Newer gh defaults to secret gists; --secret no longer exists.
+					const result = spawnSync("gh", ["gist", "create", file], { encoding: "utf8" });
+					if (result.status !== 0) throw new Error((result.stderr || "gh gist create failed").trim());
+					showText("Shared:", result.stdout.trim());
+				})().catch((error) => console.error(error instanceof Error ? error.message : String(error)));
+				return;
+			}
+			if (trimmed === "/new") return exitFresh();
 			if (trimmed === "/mcp") {
 				view.ui.flash("Go run pi to configure MCP servers.");
 				return;

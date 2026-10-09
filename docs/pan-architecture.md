@@ -15,7 +15,7 @@ backbone copy (upstream sample, verbatim apart from import paths)
   main.ts, harness-setup.ts, runtime.ts, sessions.ts, tui.ts
       ^
 skin.ts (the only file with scheme behavior)
-  prompt, subagent, background, btw, search, MCP
+  prompt, subagent, background terminals, btw, search, MCP
       ^
 pss (bin/pss launcher) + my dotfiles (skills, agents.md)
 ```
@@ -27,14 +27,14 @@ Nothing flows downward past configuration: the skin never writes pi's settings, 
 One ownership tree of tasks and conversations runs the whole show:
 
 - A **model request**, a **tool call**, and a **compaction** are built-in tasks.
-- A **foreground subagent** is a child conversation owned by the tool call that started it. The parent waits for the answer; aborting the call aborts the child.
-- A **background subagent** is a task owned by the conversation plus a child owned by that task. The main run stays free while it works; the task posts its report back as a follow-up message. Crash-safe via `requestId`s on both the child submission and the report.
+- A **foreground subagent** is a child conversation owned by the tool call that started it. One general-purpose tool, same as the parent unless asked; the task carries the instructions. The parent waits for the answer; aborting the call aborts the child.
+- **Background terminals** are owned shell processes, not agents: `bg_start` runs a server, watcher or long command under a supervisor; `/ps` lists them with recent output and `/stop` stops them all. Completions notify the main conversation. Like Codex, terminals are for shells; agents stay in conversations.
 - A **side question** is a task in an ownerless reference-only fork. It reads parent history, answers once, and never writes back.
 - `/tasks` renders the live task graph: every task, what it waits on, and the conversations it owns. `/agents` switches between the conversations.
 
 ## Registry composition
 
-`harness-setup.ts` builds one registry per session directory: pi's `CodingTools`, the skin prompt (pi's own section order over project context, skills, and cwd), the skin tools (`subagent`, `background`, `btw`) plus the background task, the `web_search` adapter, and one lazily-connected `codemode` tool fronting every configured MCP server. MCP servers connect on first tool use, never at startup, so a dead server cannot break startup and `--check` stays offline-clean.
+`harness-setup.ts` builds one registry per session directory: pi's `CodingTools`, the skin prompt (pi's own section order over project context, skills, and cwd), the skin tools (`subagent`, `btw`), the process tools (`bg_start` and friends), the `web_search` adapter, and one lazily-connected `codemode` tool fronting every configured MCP server. MCP servers connect on first tool use, never at startup, so a dead server cannot break startup and `--check` stays offline-clean.
 
 ## Sessions and storage
 
@@ -59,4 +59,4 @@ done
 
 ## Deliberate omissions
 
-No login UI (pi owns auth), no process supervisor (background work is durable tasks, not shell jobs), no test suite (the backbone is upstream's; the skin is verified live), no exact-resume picker (`--continue` reopens newest), no model allowlist (the picker shows the live catalog). Each omission keeps the diff against upstream reviewable; anything missed becomes visible the moment someone needs it.
+No login UI (pi owns auth), no test suite (the backbone is upstream's; the skin is verified live), no exact-resume picker (`--continue` reopens newest), no model allowlist (the picker shows the live catalog). Each omission keeps the diff against upstream reviewable; anything missed becomes visible the moment someone needs it.

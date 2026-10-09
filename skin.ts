@@ -6,11 +6,9 @@ import {
 	configure,
 	defineDoc,
 	defineExtension,
-	defineTask,
 	defineTool,
 	section,
 	ProviderDoc,
-	type ConversationId,
 	type PromptInput,
 } from "@earendil-works/pi-durable";
 import {
@@ -138,7 +136,7 @@ export function createSkinPrompt(settings: SettingsManager, fallbackCwd: string)
 		}
 		return {
 			preamble:
-				"You are Pi, a general-purpose interactive coding harness. Work in the current project, investigate before editing, use the project's checks, and complete the user's requested scope. Read applicable nested project instructions before edits. Load a relevant skill by reading its SKILL.md. Do not read environment-secret files. Do not commit, push or publish without user authorization. Use foreground bash for finite work and the background tool for work that should outlive this turn. Subagents have fresh contexts: give each the task and authoritative file paths, not hidden conversation assumptions.",
+				"You are Pi, a general-purpose interactive coding harness. Work in the current project, investigate before editing, use the project's checks, and complete the user's requested scope. Read applicable nested project instructions before edits. Load a relevant skill by reading its SKILL.md. Do not read environment-secret files. Do not commit, push or publish without user authorization. Use foreground bash for finite work and bg_start for servers, watchers and long commands. Subagents have fresh contexts: give each the task and authoritative file paths, not hidden conversation assumptions.",
 			...buildSystemPromptSections({
 				cwd,
 				selectedTools,
@@ -188,6 +186,16 @@ export function buildSlashCommands(
 		{ name: "quit", description: "Exit the session" },
 		{ name: "mcp", description: "Configure MCP servers in pi" },
 		{ name: "settings", description: "Change settings in pi" },
+		{ name: "ps", description: "List background terminals" },
+		{ name: "stop", description: "Stop all background terminals" },
+		{ name: "thinking", description: "Select thinking level", argumentHint: "[level]" },
+		{ name: "new", description: "Start a fresh session" },
+		{ name: "debug", description: "Write a debug log" },
+		{ name: "changelog", description: "Show what is new" },
+		{ name: "hotkeys", description: "Show keyboard shortcuts" },
+		{ name: "export", description: "Export transcript to JSONL", argumentHint: "[path]" },
+		{ name: "import", description: "Import a transcript JSONL file", argumentHint: "<path>" },
+		{ name: "share", description: "Share transcript as a secret gist" },
 		...skills.map((skill) => ({ name: `skill:${skill.name}`, description: skill.description, argumentHint: "[task]" })),
 	];
 }
@@ -207,35 +215,35 @@ function resolveChildModel(
 	requested: string | undefined,
 	known: (provider: string, modelId: string) => unknown,
 ) {
-	const fallback =
-		parent?.provider === "openai-codex" ? { provider: "openai-codex", modelId: "gpt-6-luna" } : parent;
+	const fallback = parent;
 	const [provider, ...parts] = requested?.split("/") ?? [];
 	const selected =
-		requested === "inherit"
+		requested === undefined || requested === "inherit"
 			? parent
-			: requested
-				? parts.length
-					? { provider, modelId: parts.join("/") }
-					: { provider: "openai-codex", modelId: requested }
-				: fallback;
+			: parts.length
+				? { provider, modelId: parts.join("/") }
+				: { provider: "openai", modelId: requested };
 	if (!selected?.provider || !selected?.modelId || !known(selected.provider, selected.modelId)) {
 		throw new Error("Subagent model is not in the configured catalog");
 	}
 	return selected as { provider: string; modelId: string };
 }
 
-// ─── subagent: foreground delegation ────────────────────────────────────────
+// ─── subagent: one general-purpose delegate ────────────────────────────────
+// Like Codex and pi-subagents' delegate: no special instructions, same as the
+// parent unless asked. The task carries the instructions, the parent picks the
+// model explicitly or not at all.
 
 const subagent = defineTool({
 	name: "subagent",
 	description:
-		"Delegate a bounded task to a fresh child conversation and get its answer back. Supply authoritative file paths and acceptance checks. Parent cancellation aborts child work. Returns the child's answer; no automatic model fallback or recursive delegation.",
+		"Delegate a bounded task to a general-purpose child conversation and get its answer back. The child works like the parent session. Supply the task, authoritative file paths and acceptance checks in the task itself. Parent cancellation aborts child work.",
 	parameters: Type.Object({
 		task: Type.String(),
 		model: Type.Optional(
 			Type.String({
 				description:
-					"Configured provider/model, a bare Codex model ID, or inherit. Defaults to Luna for Codex parents and the current model otherwise.",
+					"Configured provider/model or a bare Codex model ID. Defaults to the parent's model.",
 			}),
 		),
 	}),
@@ -251,7 +259,7 @@ const subagent = defineTool({
 			await configure(tx, child.id, {
 				model: selected,
 				thinkingLevel: "medium",
-				tools: { remove: [subagent, background, btw] },
+				tools: { remove: [subagent, btw] },
 			});
 			return child.id;
 		}, context);
@@ -271,94 +279,6 @@ const subagent = defineTool({
 	},
 });
 
-// ─── background: the sample pattern, generalized ────────────────────────────
-// A background task owns the child conversation and posts its report back to
-// the main conversation as a follow-up message, so the main run stays free.
-
-type BackgroundState = { phase: "deliver" } | { phase: "report"; report: string };
-
-const BackgroundWork = defineTask<{ task: string; model: { provider: string; modelId: string } }, BackgroundState, null>({
-	name: "skin.background",
-	version: 1,
-	initial: () => ({ phase: "deliver" }),
-	phases: {
-		deliver: async (task, runtime, context) => {
-			// The child conversation is owned by this task. A rerun after a crash finds it again.
-			let owned: ConversationId | undefined;
-			await runtime.commit(async (tx) => {
-				owned = (await tx.scanConversations({ ownerTaskId: task.id }, 1)).items[0]?.id;
-				return undefined;
-			}, context);
-			const child = await runtime.conversation(owned as ConversationId, context);
-			// A rerun after a crash gets the same submission back.
-			const settled = await (
-				await child!.submit(
-					{ type: "input", content: task.input.task, requestId: `background:${task.id}` },
-					context,
-				)
-			).wait(context);
-			await runtime.commit(async (tx) => {
-				let report = `[background report] The background work failed: ${settled.status === "unanswered" ? (settled as { reason?: string }).reason : "?"}`;
-				if (settled.status === "done" && settled.type === "input") {
-					report = `[background report] ${await answerText(await tx.entry(AssistantEntry, settled.answer))}`;
-				}
-				return { status: "running", checkpoint: { phase: "report", report } };
-			}, context);
-		},
-		report: async (task, runtime, context) => {
-			const main = await runtime.conversation(runtime.conversationId, context);
-			await main!.submit(
-				{
-					type: "input",
-					content: task.state.checkpoint.report,
-					whenBusy: "followUp",
-					requestId: `background-report:${task.id}`,
-				},
-				context,
-			);
-			await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
-		},
-	},
-	abort: (_task, runtime, context) =>
-		runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
-});
-
-const background = defineTool({
-	name: "background",
-	description:
-		"Start bounded work in the background: a child conversation works while the main conversation stays free, and its report arrives later as a message starting with [background report]. Aborting this call aborts the child.",
-	parameters: Type.Object({
-		task: Type.String({ description: "What the background worker should do, with file paths and acceptance checks" }),
-		model: Type.Optional(
-			Type.String({ description: "Configured provider/model, a bare Codex model ID, or inherit. Same defaults as subagent." }),
-		),
-	}),
-	execute: async (args, api, context) => {
-		const parent = await api.agent(context);
-		const selected = resolveChildModel(parent.model, args.model, (p, m) => api.models.getModel(p, m));
-		const owner = await api.commit(async (tx) => {
-			const owner = await tx.createTask(
-				BackgroundWork,
-				{ task: args.task, model: selected },
-				{ ownership: { kind: "conversation" }, background: true },
-			);
-			const child = await tx.createConversation({ ownership: { kind: "task", taskId: owner } });
-			await configure(tx, child.id, {
-				model: selected,
-				thinkingLevel: "medium",
-				tools: { remove: [subagent, background, btw] },
-			});
-			return owner;
-		}, context);
-		const owned = await api.commit(async (tx) => {
-			return (await tx.scanConversations({ ownerTaskId: owner }, 1)).items[0]?.id;
-		}, context);
-		if (owned !== undefined) await api.details({ conversationId: owned }, context);
-		return {
-			content: [{ type: "text" as const, text: "Background work started; its report will arrive as a message." }],
-		};
-	},
-});
 
 // ─── btw: a side question is just a task ────────────────────────────────────
 
@@ -372,27 +292,29 @@ const btw = defineTool({
 	parameters: Type.Object({ question: Type.String({ description: "The side question to answer from parent history" }) }),
 	replay: "safe",
 	execute: async (args, api, context) => {
-		const parent: any = await api.conversation(api.conversationId, context);
-		const last = (await parent.entries({}, 1, undefined, context)).items[0];
-		if (last === undefined) throw new Error("Nothing to reference yet");
-		const agent = await parent.agent(context);
-		const side = await parent.fork(
-			last.id,
-			{
-				ownership: { kind: "ownerless" as const },
-				agent: {
-					model: agent.model,
-					thinkingLevel: agent.thinkingLevel,
-					cwd: agent.cwd,
-					tools: agent.tools.filter((t: { name: string }) => ["read", "web_search"].includes(t.name)),
-					instructions: `${agent.instructions ?? ""}\n\n${SIDE_BOUNDARY}`,
-				},
-			},
+		const parent = await api.agent(context);
+		const last = await api.commit(
+			async (tx) => (await tx.scanEntries({ conversationId: api.conversationId }, 1)).items[0],
 			context,
 		);
-		await api.details({ conversationId: side.id }, context);
+		if (last === undefined) throw new Error("Nothing to reference yet");
+		const childId = await api.commit(async (tx) => {
+			const record = await tx.forkConversation(api.conversationId, last.id, {
+				ownership: { kind: "ownerless" },
+			});
+			await configure(tx, record.id, {
+				model: parent.model,
+				thinkingLevel: parent.thinkingLevel,
+				cwd: parent.cwd,
+				tools: { remove: parent.tools.filter((t) => !["read", "web_search"].includes(t.name)) },
+				instructions: `${parent.instructions ?? ""}\n\n${SIDE_BOUNDARY}`,
+			});
+			return record.id;
+		}, context);
+		await api.details({ conversationId: childId }, context);
+		const child = (await api.conversation(childId, context))!;
 		const result = await (
-			await side.submit({ type: "input", content: args.question, requestId: `btw:${api.taskId}` }, context)
+			await child.submit({ type: "input", content: args.question, requestId: `btw:${api.taskId}` }, context)
 		).wait(context);
 		if (result.status !== "done" || result.type !== "input") {
 			throw new Error(`Side question did not answer: ${result.status}`);
@@ -403,7 +325,7 @@ const btw = defineTool({
 });
 
 export function subagentsExtension() {
-	return defineExtension({ name: "skin", tools: [subagent, background, btw], tasks: [BackgroundWork] });
+	return defineExtension({ name: "skin", tools: [subagent, btw] });
 }
 
 // ─── search: provider-native web search ─────────────────────────────────────
