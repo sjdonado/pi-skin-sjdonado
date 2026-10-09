@@ -222,7 +222,7 @@ function resolveChildModel(
 			? parent
 			: parts.length
 				? { provider, modelId: parts.join("/") }
-				: { provider: "openai-codex", modelId: requested };
+				: { provider: "openai", modelId: requested };
 	if (!selected?.provider || !selected?.modelId || !known(selected.provider, selected.modelId)) {
 		throw new Error("Subagent model is not in the configured catalog");
 	}
