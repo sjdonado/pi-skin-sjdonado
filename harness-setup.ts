@@ -8,6 +8,7 @@ import { findInitialModel, resolveCliModel } from "./node_modules/@earendil-work
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Search, createSkinPrompt, mcpExtension, subagentsExtension } from "./skin.ts";
+import { Processes, processTools } from "./processes.ts";
 
 /** pi's HTTP setup: proxy, idle timeouts, and one undici for fetch. Without it, some provider streams break off. */
 export function configureHarnessHttp(settingsManager: SettingsManager): void {
@@ -43,11 +44,12 @@ export function createHarnessSettings(settingsManager: SettingsManager): Harness
 }
 
 /** A registry with pi's coding tools, the skin prompt, and the skin extensions. */
-export function createSkinRegistry(settingsManager: SettingsManager, cwd: string): Registry {
+export function createSkinRegistry(settingsManager: SettingsManager, cwd: string, processes: Processes): Registry {
 	const registry = createRegistry();
 	registry.install(CodingTools);
 	registry.install(createSkinPrompt(settingsManager, cwd));
 	registry.install(subagentsExtension());
+	registry.install(processTools(processes));
 	registry.install(Search);
 	registry.install(mcpExtension(cwd));
 	return registry;

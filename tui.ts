@@ -745,6 +745,39 @@ export async function runDurableTui(
 			if (trimmed === "/model") return selectModel();
 			if (trimmed === "/tasks") return void controller.toggleTasks();
 			if (trimmed === "/agents") return selectConversation();
+			if (trimmed === "/ps") {
+				void (async () => {
+					const jobs = await controller.listTerminals();
+					if (jobs.length === 0) {
+						view.ui.flash("No background terminals.");
+						return;
+					}
+					const selector = new ListSelector(
+						"Background terminals:",
+						jobs.map((job) => ({
+							value: job.id,
+							label: `${job.name} · ${job.status}`,
+							description: job.command.slice(0, 80),
+						})),
+						(value) => {
+							view.restoreEditor();
+							controller
+								.terminalLogs(value)
+								.then((logs) => showText("Terminal output:", logs.slice(-4000) || "(no output yet)"))
+								.catch((error) => console.error(error instanceof Error ? error.message : String(error)));
+						},
+						() => view.restoreEditor(),
+					);
+					view.mount(selector);
+				})().catch((error) => console.error(error instanceof Error ? error.message : String(error)));
+				return;
+			}
+			if (trimmed === "/stop") {
+				void controller
+					.stopTerminals()
+					.catch((error) => console.error(error instanceof Error ? error.message : String(error)));
+				return;
+			}
 			if (trimmed === "/compact" || trimmed.startsWith("/compact ")) {
 				const instructions = trimmed.slice("/compact".length).trim();
 				return void controller.compact(instructions || undefined);

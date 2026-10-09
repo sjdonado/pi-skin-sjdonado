@@ -10,7 +10,7 @@ bun run check   # typecheck; must be green before showing work
 pss --check     # startup smoke: models, MCP servers, codemode, session
 ```
 
-Live verification uses `pss` with Luna: delegate a task, run background research while chatting, confirm via `/tasks` and `/agents`. Never use paid turns as exploration; keep live runs to the acceptance script in `README.md`.
+Live verification uses `pss` with Luna: delegate a task, start a server in the background while chatting, confirm via `/ps` that the terminal runs with live output. Never use paid turns as exploration; keep live runs to the acceptance script in `README.md`.
 
 ## Edit zones
 

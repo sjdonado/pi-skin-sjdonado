@@ -26,6 +26,8 @@ import {
 } from "./harness-setup.ts";
 import { selectSession } from "./sessions.ts";
 import { clearSkinCaches } from "./skin.ts";
+import { Processes, type Job } from "./processes.ts";
+import { join } from "node:path";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -81,6 +83,12 @@ export interface DurableController {
 	setThinking(level: ModelThinkingLevel): Promise<void>;
 	/** Import transcript entries from one of our JSONL exports. */
 	importTranscript(path: string): Promise<void>;
+	/** Background terminals owned by this host. */
+	listTerminals(): Promise<{ id: string; name: string; command: string; status: string }[]>;
+	/** Bounded output of one background terminal. */
+	terminalLogs(id: string): Promise<string>;
+	/** Stop every running background terminal. */
+	stopTerminals(): Promise<void>;
 	/** Show and talk to another conversation. */
 	switchConversation(id: ConversationId): Promise<void>;
 }
@@ -131,13 +139,15 @@ function titleOf(entry: EntryRecord | undefined): { title?: string } {
 
 export async function openDurable(options: OpenDurableOptions = {}): Promise<OpenDurableResult> {
 	const location = await selectSession(options.cwd ?? process.cwd(), options.continueSession ?? false, options.sessionId);
+	let notifyTerminal: (job: Job) => void = () => {};
+	const processes = new Processes(join(location.directory, "processes"), location.cwd, (job) => notifyTerminal(job));
 	let harness: Harness | undefined;
 	try {
 		const modelRuntime = await ModelRuntime.create();
 		const settingsManager = SettingsManager.create(location.cwd);
 		configureHarnessHttp(settingsManager);
 		const settings = createHarnessSettings(settingsManager);
-		const registry = createSkinRegistry(settingsManager, location.cwd);
+		const registry = createSkinRegistry(settingsManager, location.cwd, processes);
 		const envs = new ExecutionEnvs(location.cwd);
 
 		const pendingReports: unknown[] = [];
@@ -287,7 +297,18 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 					}, fail);
 				}),
 			// Not queued: it waits until the conversation is idle.
-			abort: () => current.abort(context).catch(fail),
+			abort: () => {
+				void processes.stopOwner(current.id).catch(fail);
+				return current.abort(context).catch(fail);
+			},
+			listTerminals: async () =>
+				processes.list().map((job) => ({ id: job.id, name: job.name, command: job.command, status: job.status })),
+			terminalLogs: async (id: string) => processes.logs(id),
+			stopTerminals: () =>
+				command(async () => {
+					await processes.stopAll();
+					notice("info", "Stopping all background terminals.");
+				}),
 			cycleThinking: () =>
 				command(async () => {
 					const model = agentModel();
@@ -375,6 +396,21 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 			notice("warning", `Saved model is unavailable: ${saved.provider}/${saved.modelId}`);
 		}
 		if (initial?.fallbackMessage !== undefined) notice("info", initial.fallbackMessage);
+		// Background terminals report back here so a finished server or job is seen.
+		notifyTerminal = (job) => {
+			if (["stopped", "owner-exited"].includes(job.status)) return;
+			void root
+				.submit(
+					{
+						type: "input",
+						requestId: `terminal:${job.id}:${job.status}`,
+						content: `Background terminal ${job.name} (${job.id}) is ${job.status}. Check its output if needed. Do not restart it automatically.`,
+						whenBusy: "followUp",
+					},
+					context,
+				)
+				.catch((error) => notice("warning", error instanceof Error ? error.message : String(error)));
+		};
 		// The task panel starts open; /tasks hides it.
 		await controller.toggleTasks();
 		// Recovered work from an interrupted turn continues now.
@@ -400,6 +436,7 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 					try {
 						// Close writes no outcome: a running turn resumes with --continue.
 						await opened.close(context);
+						await processes.close();
 						await envs.cleanup(context);
 					} finally {
 						await location.release();
@@ -409,6 +446,7 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 			},
 		};
 	} catch (error) {
+		await processes.close().catch(() => {});
 		await harness?.close(context).catch(() => {});
 		await location.release().catch(() => {});
 		throw error;
